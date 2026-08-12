@@ -194,6 +194,7 @@ let RECORD_ID = ${recordId ? recordId : 'null'};
 const IMEI_PREFILL = "${esc(p.imei)}";
 const IS_ADMIN = ${isAdmin ? 'true' : 'false'};
 const CLAVE_ADMIN = "${isAdmin ? CLAVE_NUEVO : ''}";
+let fotoSubida = ${p.foto_path ? 'true' : 'false'};
 
 function getImeiValue() {
   return (val('trabajo') === 'Instalación') ? val('imei_select') : val('imei_manual');
@@ -292,14 +293,23 @@ document.getElementById('foto').addEventListener('change', async (e) => {
   fd.append('foto', fotoFile);
   fd.append('id', RECORD_ID);
   document.getElementById('status').innerText = 'Subiendo foto...';
-  await fetch('/api/servicio/foto', { method: 'POST', body: fd });
+  const rFoto = await fetch('/api/servicio/foto', { method: 'POST', body: fd });
+  if (rFoto.ok) { fotoSubida = true; }
   document.getElementById('status').innerText = 'Foto subida ✓';
 });
 
 document.getElementById('btn-terminar').addEventListener('click', async () => {
   const estado_cierre = val('estado_cierre');
   if (!estado_cierre) { alert('Selecciona el estado de cierre (Instalado/Terminado)'); return; }
-  if (!val('cliente') || !getImeiValue()) { alert('Completa al menos Cliente e IMEI antes de terminar'); return; }
+  const faltantes = [];
+  if (!val('cliente')) faltantes.push('Cliente');
+  if (!getImeiValue()) faltantes.push('IMEI');
+  if (!val('vehiculo_marca')) faltantes.push('Vehículo (marca)');
+  if (!val('vehiculo_modelo')) faltantes.push('Modelo');
+  if (val('trabajo') === 'Instalación' && !val('color_vehiculo')) faltantes.push('Color del vehículo');
+  if (!val('zona_instalacion')) faltantes.push('Zona de instalación');
+  if (!fotoSubida) faltantes.push('Foto');
+  if (faltantes.length) { alert('Faltan campos obligatorios: ' + faltantes.join(', ')); return; }
   const btn = document.getElementById('btn-terminar');
   btn.disabled = true; btn.innerText = 'Enviando...';
   await autoguardar();
