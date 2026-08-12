@@ -1,0 +1,20 @@
+{
+  "name": "DFC Track GPS - Servicios",
+  "short_name": "DFC Servicios",
+  "start_url": "/buscar?clave=DFC2026Servicio",
+  "display": "standalone",
+  "background_color": "#f2f4f7",
+  "theme_color": "#128C7E",
+  "icons": [
+    {
+      "src": "/buscar/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/buscar/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -655,6 +655,9 @@ function renderBuscar() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Servicios GPS</title>
+<link rel="manifest" href="/buscar/manifest.json">
+<link rel="apple-touch-icon" href="/buscar/apple-touch-icon.png">
+<meta name="theme-color" content="#128C7E">
 <style>
   body { font-family: -apple-system, Arial, sans-serif; background:#f2f4f7; margin:0; padding:16px; }
   .wrap { max-width:900px; margin:0 auto; }
@@ -1183,6 +1186,27 @@ module.exports = function servicioHandler(req, res, sock) {
     return;
   }
 
+  if (req.method === 'GET' && parsed.pathname === '/buscar/manifest.json') {
+    try {
+      const data = fs.readFileSync('/opt/baileys-servicio/public-icons/manifest.json');
+      res.writeHead(200, {'Content-Type': 'application/manifest+json'});
+      return res.end(data);
+    } catch (e) {
+      res.writeHead(404);
+      return res.end('No encontrado');
+    }
+  }
+  if (req.method === 'GET' && (parsed.pathname === '/buscar/icon-192.png' || parsed.pathname === '/buscar/icon-512.png' || parsed.pathname === '/buscar/apple-touch-icon.png')) {
+    try {
+      const nombre = parsed.pathname.split('/').pop();
+      const data = fs.readFileSync('/opt/baileys-servicio/public-icons/' + nombre);
+      res.writeHead(200, {'Content-Type': 'image/png'});
+      return res.end(data);
+    } catch (e) {
+      res.writeHead(404);
+      return res.end('No encontrado');
+    }
+  }
   if (req.method === 'GET' && parsed.pathname === '/nuevo') {
     if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403); return res.end('No autorizado'); }
     res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
