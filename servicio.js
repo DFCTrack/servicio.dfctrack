@@ -1339,12 +1339,12 @@ module.exports = function servicioHandler(req, res, sock) {
           const conn = db();
           conn.query(
             `INSERT INTO servicios_gps (tecnico_id, tecnico_nombre, fecha, hora, cliente, celular, trabajo,
-             vehiculo_marca, vehiculo_modelo, color_vehiculo, placa_chasis, zona_instalacion, ubicacion_url, nota, imei, token, estado)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asignado')`,
+             vehiculo_marca, vehiculo_modelo, color_vehiculo, placa_chasis, zona_instalacion, ubicacion_url, nota, imei, correo, token, estado)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asignado')`,
             [data.tecnico_id, t.nombre, data.fecha||new Date().toISOString().slice(0,10), data.hora||null,
              data.cliente||null, data.celular||null, data.trabajo||null,
              campos.vehiculo_marca||null, campos.vehiculo_modelo||null, campos.color_vehiculo||null, campos.placa_chasis||null,
-             campos.zona_instalacion||null, data.ubicacion_url||null, data.nota||null, campos.imei||null, token],
+             campos.zona_instalacion||null, data.ubicacion_url||null, data.nota||null, campos.imei||null, campos.correo||null, token],
             (err, result) => {
               conn.end();
               if (err) { resolve({ ok:false, error: err.message }); return; }
@@ -1366,7 +1366,8 @@ module.exports = function servicioHandler(req, res, sock) {
             color_vehiculo: null,
             placa_chasis: v.plate_number || null,
             zona_instalacion: v.object_owner || null,
-            imei: v.imei || null
+            imei: v.imei || null,
+            correo: v.email || null
           });
           creados.push(r);
         }
