@@ -39,9 +39,19 @@ function db() { return mysql.createConnection(DB_CONFIG); }
 function generarToken() { return crypto.randomBytes(6).toString('hex'); }
 function esc(v) { return (v === null || v === undefined) ? '' : String(v).replace(/"/g, '&quot;'); }
 function renderWoxBox(p, isAdmin) {
-  if (!isAdmin || p.trabajo !== 'Instalación' || p.estado !== 'terminado') return '';
+  if (!isAdmin || p.estado !== 'terminado') return '';
+  const esTrasladoServ = p.trabajo === 'Reinstalación (1 traslado)' || p.trabajo === 'Reinstalación (2 traslados)';
+  if (p.trabajo !== 'Instalación' && !esTrasladoServ) return '';
   if (p.aplicado_wox) {
     return '<div style="margin-top:16px;padding:12px;background:#eafaf3;border-radius:8px;color:#128C7E;font-weight:600;">✅ Ya aplicado a GPSWOX' + (p.aplicado_wox_at ? (' — ' + esc(String(p.aplicado_wox_at))) : '') + '</div>';
+  }
+  if (esTrasladoServ) {
+    if (!p.vehiculo_destino_marca || !p.vehiculo_destino_placa) return '';
+    return '' +
+      '<div id="wox-box" style="margin-top:16px;padding:14px;background:#eef6ff;border-radius:8px;">' +
+      '<div style="font-size:13px;color:#666;margin-bottom:8px;">Esto actualizará en GPSWOX el vehículo del IMEI ' + esc(p.imei) + ' con los datos del vehículo destino (mismo cliente).</div>' +
+      '<button type="button" id="btn-aplicar-wox-traslado" style="background:#f5a623;">Aplicar traslado a GPSWOX</button>' +
+      '</div>';
   }
   var nombreSugerido = ((p.vehiculo_marca || '') + ' ' + (p.vehiculo_modelo || '') + ' ' + (p.color_vehiculo || '')).replace(/\s+/g, ' ').trim();
   return '' +
@@ -83,6 +93,9 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
   .gps-box { margin-top:10px; padding:12px; border-radius:8px; background:#f7f7f7; font-size:13px; }
   .gps-online { color:#128C7E; font-weight:600; }
   .gps-offline { color:#c53030; font-weight:600; }
+  .seccion { margin-top:20px; padding-top:14px; border-top:2px solid #eee; }
+  .seccion-titulo { font-size:12px; font-weight:700; color:#128C7E; text-transform:uppercase; letter-spacing:.5px; margin-bottom:2px; }
+  .falta-evidencia { color:#c53030; font-weight:600; font-size:13px; margin-top:8px; }
 </style>
 </head>
 <body>
@@ -91,8 +104,26 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
   <h1>🛰 Servicio GPS</h1>
   <div class="sub">Técnico: <b>${nombreTecnico}</b> · Actividad: <b>${new Date().toLocaleDateString('es-DO')}</b></div>
   ${isAdmin ? ('<label>Reasignar técnico</label><select id="tecnico_id_admin">' + Object.entries(TECNICOS).map(function(e){ return '<option value="' + e[0] + '" ' + (e[0] === tecnicoId ? 'selected' : '') + '>' + e[1].nombre + '</option>'; }).join('') + '</select>') : ''}
-  ${isAdmin ? ('<label>Correo del cliente</label><input type="email" id="correo" value="' + esc(p.correo) + '" placeholder="correo@ejemplo.com">' +
-    '<label>Pago a técnico</label><select id="pago_tecnico"><option value="pendiente" ' + (p.pago_tecnico!=='pagado'?'selected':'') + '>Pendiente</option><option value="pagado" ' + (p.pago_tecnico==='pagado'?'selected':'') + '>Pagado</option></select>') : ''}
+
+  <div class="seccion">
+    <div class="seccion-titulo">Cliente</div>
+    <label>Nombre del cliente</label>
+    <input type="text" id="cliente" value="${esc(p.cliente)}" placeholder="Nombre del cliente">
+    <label>Celular / WhatsApp</label>
+    <input type="tel" id="celular" value="${esc(p.celular)}" placeholder="809-000-0000">
+    ${isAdmin ? ('<label>Correo (solo admin)</label><input type="email" id="correo" value="' + esc(p.correo) + '" placeholder="correo@ejemplo.com">' +
+      '<label>Pago a técnico</label><select id="pago_tecnico"><option value="pendiente" ' + (p.pago_tecnico!=='pagado'?'selected':'') + '>Pendiente</option><option value="pagado" ' + (p.pago_tecnico==='pagado'?'selected':'') + '>Pagado</option></select>') : ''}
+  </div>
+
+  <div class="seccion">
+    <div class="seccion-titulo">Persona que recibe el servicio</div>
+    <label>Nombre de quien recibe</label>
+    <input type="text" id="persona_recibe_nombre" value="${esc(p.persona_recibe_nombre)}" placeholder="Si es distinto al cliente titular">
+    <label>Teléfono de quien recibe</label>
+    <input type="tel" id="persona_recibe_telefono" value="${esc(p.persona_recibe_telefono)}" placeholder="809-000-0000">
+    <label>Relación / nota</label>
+    <input type="text" id="persona_recibe_nota" value="${esc(p.persona_recibe_nota)}" placeholder="Ej: hermano, empleado, encargado del vehículo">
+  </div>
 
   <div class="row2">
     <div>
@@ -105,12 +136,6 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
     </div>
   </div>
 
-  <label>Cliente</label>
-  <input type="text" id="cliente" value="${esc(p.cliente)}" placeholder="Nombre del cliente">
-
-  <label>Celular / WhatsApp</label>
-  <input type="tel" id="celular" value="${esc(p.celular)}" placeholder="809-000-0000">
-
   <label>Servicio a realizar</label>
   <select id="trabajo">
     <option value="">Selecciona...</option>
@@ -120,6 +145,10 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
     <option value="Reinstalación (1 traslado)" ${p.trabajo==='Reinstalación (1 traslado)'?'selected':''}>Reinstalación (1 traslado)</option>
     <option value="Reinstalación (2 traslados)" ${p.trabajo==='Reinstalación (2 traslados)'?'selected':''}>Reinstalación (2 traslados)</option>
   </select>
+
+  <div class="seccion" id="titulo-vehiculo-origen-wrap" style="display:none;">
+    <div class="seccion-titulo">🔻 Retirar GPS de (vehículo origen)</div>
+  </div>
 
   <div class="row2">
     <div>
@@ -142,6 +171,32 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
 
   <label>Zona de instalación</label>
   <input type="text" id="zona_instalacion" value="${esc(p.zona_instalacion)}">
+
+  <div class="seccion" id="bloque-vehiculo-destino" style="display:none;">
+    <div class="seccion-titulo">🔺 Instalar GPS en (vehículo destino)</div>
+    <div class="row2">
+      <div>
+        <label>Vehículo (marca)</label>
+        <input type="text" id="vehiculo_destino_marca" value="${esc(p.vehiculo_destino_marca)}">
+      </div>
+      <div>
+        <label>Modelo</label>
+        <input type="text" id="vehiculo_destino_modelo" value="${esc(p.vehiculo_destino_modelo)}">
+      </div>
+    </div>
+    <div class="row2">
+      <div>
+        <label>Año</label>
+        <input type="text" id="vehiculo_destino_anio" value="${esc(p.vehiculo_destino_anio)}">
+      </div>
+      <div>
+        <label>Color</label>
+        <input type="text" id="vehiculo_destino_color" value="${esc(p.vehiculo_destino_color)}">
+      </div>
+    </div>
+    <label>Placa</label>
+    <input type="text" id="vehiculo_destino_placa" value="${esc(p.vehiculo_destino_placa)}">
+  </div>
 
   <label>¿Posee apagado?</label>
   <select id="posee_apagado">
@@ -169,9 +224,18 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
     <div id="gps-estado">📡 Consultando estado...</div>
   </div>
 
-  <label>Foto (tablero / instalación)</label>
-  <input type="file" id="foto" accept="image/*" capture="environment">
-  <img id="foto-preview">
+  <div class="seccion">
+    <div class="seccion-titulo">Evidencias fotográficas (obligatorias)</div>
+    <label>Foto 1 — Vehículo</label>
+    <input type="file" id="foto" accept="image/*" capture="environment">
+    <img id="foto-preview">
+    <div id="foto-estado" style="font-size:12px;color:#888;margin-top:4px;">${p.foto_path ? '✅ Ya subida' : 'Falta subir'}</div>
+
+    <label>Foto 2 — Ubicación del GPS (zona de instalación)</label>
+    <input type="file" id="foto_gps" accept="image/*" capture="environment">
+    <img id="foto-gps-preview">
+    <div id="foto-gps-estado" style="font-size:12px;color:#888;margin-top:4px;">${p.foto_gps_path ? '✅ Ya subida' : 'Falta subir'}</div>
+  </div>
 
   <label>Estado de cierre</label>
   <select id="estado_cierre">
@@ -180,6 +244,7 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
     <option value="Terminado">Terminado</option>
   </select>
 
+  <div id="falta-evidencia-msg" class="falta-evidencia" style="display:none;"></div>
   <button id="btn-terminar">Terminar y Enviar</button>
   ${isAdmin ? '<button type="button" id="btn-reenviar" style="background:#0b76ef;">🔄 Reenviar WS al técnico</button>' : ''}
   ${(isAdmin && p.estado === 'terminado') ? ('<button type="button" id="btn-crear-alegra" style="background:#f0932b;" ' + (p.alegra_invoice_id ? 'disabled' : '') + '>🧾 ' + (p.alegra_invoice_id ? ('Facturado ✓ #' + esc(p.alegra_invoice_number)) : 'Crear en Alegra') + '</button>') : ''}
@@ -194,12 +259,14 @@ let RECORD_ID = ${recordId ? recordId : 'null'};
 const IMEI_PREFILL = "${esc(p.imei)}";
 const IS_ADMIN = ${isAdmin ? 'true' : 'false'};
 const CLAVE_ADMIN = "${isAdmin ? CLAVE_NUEVO : ''}";
-let fotoSubida = ${p.foto_path ? 'true' : 'false'};
 
 function getImeiValue() {
   return (val('trabajo') === 'Instalación') ? val('imei_select') : val('imei_manual');
 }
 
+function esTraslado(trabajo) {
+  return trabajo === 'Reinstalación (1 traslado)' || trabajo === 'Reinstalación (2 traslados)';
+}
 function campos() {
   const tecnicoSelectAdmin = document.getElementById('tecnico_id_admin');
   const correoEl = document.getElementById('correo');
@@ -212,7 +279,15 @@ function campos() {
     placa_chasis: val('placa_chasis'), zona_instalacion: val('zona_instalacion'),
     posee_apagado: val('posee_apagado'), ubicacion_url: val('ubicacion_url'), nota: val('nota'), imei: getImeiValue(),
     correo: correoEl ? correoEl.value : undefined,
-    pago_tecnico: pagoTecnicoEl ? pagoTecnicoEl.value : undefined
+    pago_tecnico: pagoTecnicoEl ? pagoTecnicoEl.value : undefined,
+    persona_recibe_nombre: val('persona_recibe_nombre'),
+    persona_recibe_telefono: val('persona_recibe_telefono'),
+    persona_recibe_nota: val('persona_recibe_nota'),
+    vehiculo_destino_marca: esTraslado(val('trabajo')) ? val('vehiculo_destino_marca') : undefined,
+    vehiculo_destino_modelo: esTraslado(val('trabajo')) ? val('vehiculo_destino_modelo') : undefined,
+    vehiculo_destino_color: esTraslado(val('trabajo')) ? val('vehiculo_destino_color') : undefined,
+    vehiculo_destino_placa: esTraslado(val('trabajo')) ? val('vehiculo_destino_placa') : undefined,
+    vehiculo_destino_anio: esTraslado(val('trabajo')) ? val('vehiculo_destino_anio') : undefined
   };
 }
 function val(id) { return document.getElementById(id).value; }
@@ -240,6 +315,8 @@ function actualizarCamposPorTrabajo() {
   const filaColor = document.getElementById('fila-color');
   const filaImeiSelect = document.getElementById('fila-imei-select');
   const filaImeiManual = document.getElementById('fila-imei-manual');
+  const bloqueDestino = document.getElementById('bloque-vehiculo-destino');
+  const tituloOrigenWrap = document.getElementById('titulo-vehiculo-origen-wrap');
   if (trabajo === 'Instalación') {
     filaColor.style.display = 'block';
     filaImeiSelect.style.display = 'block';
@@ -255,6 +332,9 @@ function actualizarCamposPorTrabajo() {
     filaImeiManual.style.display = 'none';
     if (!imeiCargado) { imeiCargado = true; cargarImei(); }
   }
+  const traslado = esTraslado(trabajo);
+  bloqueDestino.style.display = traslado ? 'block' : 'none';
+  tituloOrigenWrap.style.display = traslado ? 'block' : 'none';
 }
 document.getElementById('trabajo').addEventListener('change', actualizarCamposPorTrabajo);
 
@@ -282,24 +362,37 @@ document.querySelectorAll('input, select, textarea').forEach(function(el) {
   el.addEventListener('change', programarAutoguardado);
 });
 
-document.getElementById('foto').addEventListener('change', async (e) => {
-  const fotoFile = e.target.files[0];
+let FOTO_VEHICULO_OK = ${p.foto_path ? 'true' : 'false'};
+let FOTO_GPS_OK = ${p.foto_gps_path ? 'true' : 'false'};
+
+async function subirFoto(inputId, previewId, estadoId, tipo) {
+  const input = document.getElementById(inputId);
+  const fotoFile = input.files[0];
   if (!fotoFile) return;
-  const preview = document.getElementById('foto-preview');
+  const preview = document.getElementById(previewId);
   preview.src = URL.createObjectURL(fotoFile);
   preview.style.display = 'block';
   if (!RECORD_ID) { await autoguardar(); }
   const fd = new FormData();
   fd.append('foto', fotoFile);
   fd.append('id', RECORD_ID);
+  fd.append('tipo', tipo);
   document.getElementById('status').innerText = 'Subiendo foto...';
-  const rFoto = await fetch('/api/servicio/foto', { method: 'POST', body: fd });
-  if (rFoto.ok) { fotoSubida = true; }
+  const r = await fetch('/api/servicio/foto', { method: 'POST', body: fd });
+  const data = await r.json();
+  if (data.ok) {
+    if (tipo === 'gps') { FOTO_GPS_OK = true; } else { FOTO_VEHICULO_OK = true; }
+    document.getElementById(estadoId).innerText = '✅ Ya subida';
+  }
   document.getElementById('status').innerText = 'Foto subida ✓';
-});
+}
+document.getElementById('foto').addEventListener('change', () => subirFoto('foto', 'foto-preview', 'foto-estado', 'vehiculo'));
+document.getElementById('foto_gps').addEventListener('change', () => subirFoto('foto_gps', 'foto-gps-preview', 'foto-gps-estado', 'gps'));
 
 document.getElementById('btn-terminar').addEventListener('click', async () => {
   const estado_cierre = val('estado_cierre');
+  const faltaMsg = document.getElementById('falta-evidencia-msg');
+  faltaMsg.style.display = 'none';
   if (!estado_cierre) { alert('Selecciona el estado de cierre (Instalado/Terminado)'); return; }
   const faltantes = [];
   if (!val('cliente')) faltantes.push('Cliente');
@@ -308,8 +401,14 @@ document.getElementById('btn-terminar').addEventListener('click', async () => {
   if (!val('vehiculo_modelo')) faltantes.push('Modelo');
   if (val('trabajo') === 'Instalación' && !val('color_vehiculo')) faltantes.push('Color del vehículo');
   if (!val('zona_instalacion')) faltantes.push('Zona de instalación');
-  if (!fotoSubida) faltantes.push('Foto');
-  if (faltantes.length) { alert('Faltan campos obligatorios: ' + faltantes.join(', ')); return; }
+  if (!FOTO_VEHICULO_OK) faltantes.push('Foto del vehículo');
+  if (!FOTO_GPS_OK) faltantes.push('Foto de la ubicación del GPS');
+  if (esTraslado(val('trabajo')) && (!val('vehiculo_destino_marca') || !val('vehiculo_destino_placa'))) faltantes.push('Vehículo destino (marca y placa)');
+  if (faltantes.length) {
+    faltaMsg.innerText = 'Faltan campos obligatorios: ' + faltantes.join(', ');
+    faltaMsg.style.display = 'block';
+    return;
+  }
   const btn = document.getElementById('btn-terminar');
   btn.disabled = true; btn.innerText = 'Enviando...';
   await autoguardar();
@@ -325,7 +424,8 @@ document.getElementById('btn-terminar').addEventListener('click', async () => {
     document.getElementById('status').innerText = 'Información enviada — DFC Track GPS';
   } else {
     btn.disabled = false; btn.innerText = 'Terminar y Enviar';
-    alert('Error: ' + (data.error || 'desconocido'));
+    faltaMsg.innerText = data.error || 'Error desconocido';
+    faltaMsg.style.display = 'block';
   }
 });
 
@@ -421,6 +521,29 @@ if (IS_ADMIN) {
 }
 
 if (IS_ADMIN) {
+  const btnAplicarTraslado = document.getElementById('btn-aplicar-wox-traslado');
+  if (btnAplicarTraslado) {
+    btnAplicarTraslado.addEventListener('click', async () => {
+      btnAplicarTraslado.disabled = true; btnAplicarTraslado.innerText = 'Aplicando...';
+      try {
+        const r = await fetch('/api/servicio/aplicar-wox-traslado', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ id: RECORD_ID })
+        });
+        const data = await r.json();
+        if (data.ok) {
+          alert('Traslado aplicado a GPSWOX ✓');
+          document.getElementById('wox-box').innerHTML = '<div style="color:#128C7E;font-weight:600;">✅ Aplicado a GPSWOX</div>';
+        } else {
+          alert('Error: ' + (data.error || 'desconocido'));
+          btnAplicarTraslado.disabled = false; btnAplicarTraslado.innerText = 'Aplicar traslado a GPSWOX';
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btnAplicarTraslado.disabled = false; btnAplicarTraslado.innerText = 'Aplicar traslado a GPSWOX';
+      }
+    });
+  }
   const boxCliente = document.getElementById('wox-cliente-box');
   const btnAplicar = document.getElementById('btn-aplicar-wox');
   let clienteSeleccionadoId = null;
@@ -511,7 +634,20 @@ if (IS_ADMIN) {
 
 function renderResumen(s) {
   const t = TECNICOS[String(s.tecnico_id)];
-  const fotoHtml = s.foto_path ? ('<img src="/uploads/servicios/' + s.foto_path + '" style="width:100%;border-radius:8px;margin-top:10px;">') : '';
+  const fotoHtml = s.foto_path ? ('<div class="row"><b>Foto vehículo</b></div><img src="/uploads/servicios/' + s.foto_path + '" style="width:100%;border-radius:8px;margin-top:6px;">') : '';
+  const fotoGpsHtml = s.foto_gps_path ? ('<div class="row" style="margin-top:14px;"><b>Foto ubicación del GPS</b></div><img src="/uploads/servicios/' + s.foto_gps_path + '" style="width:100%;border-radius:8px;margin-top:6px;">') : '';
+  const esTrasladoServ = s.trabajo === 'Reinstalación (1 traslado)' || s.trabajo === 'Reinstalación (2 traslados)';
+  const personaRecibeHtml = s.persona_recibe_nombre ? (
+    '<div class="row"><b>Persona que recibió</b>' + esc(s.persona_recibe_nombre) +
+    (s.persona_recibe_telefono ? (' · ' + esc(s.persona_recibe_telefono)) : '') +
+    (s.persona_recibe_nota ? (' · ' + esc(s.persona_recibe_nota)) : '') + '</div>'
+  ) : '';
+  const destinoHtml = esTrasladoServ ? (
+    '<div class="row" style="margin-top:10px;"><b>🔺 Vehículo destino</b>' +
+    esc(s.vehiculo_destino_marca) + ' ' + esc(s.vehiculo_destino_modelo) + (s.vehiculo_destino_anio ? (' ' + esc(s.vehiculo_destino_anio)) : '') +
+    (s.vehiculo_destino_color ? (' (' + esc(s.vehiculo_destino_color) + ')') : '') +
+    (s.vehiculo_destino_placa ? (' · Placa: ' + esc(s.vehiculo_destino_placa)) : '') + '</div>'
+  ) : '';
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -543,15 +679,18 @@ function renderResumen(s) {
   <div class="row"><b>Fecha / Hora</b>${esc(s.fecha)} ${esc(s.hora)}</div>
   <div class="row"><b>Cliente</b>${esc(s.cliente) || '-'}</div>
   <div class="row"><b>Celular</b>${esc(s.celular) || '-'}</div>
+  ${personaRecibeHtml}
   <div class="row"><b>Servicio</b>${esc(s.trabajo) || '-'}</div>
-  <div class="row"><b>Vehículo</b>${esc(s.vehiculo_marca)} ${esc(s.vehiculo_modelo)}</div>
+  <div class="row"><b>${esTrasladoServ ? '🔻 Vehículo origen' : 'Vehículo'}</b>${esc(s.vehiculo_marca)} ${esc(s.vehiculo_modelo)}</div>
   ${s.color_vehiculo ? ('<div class="row"><b>Color</b>' + esc(s.color_vehiculo) + '</div>') : ''}
   <div class="row"><b>Placa/Chasis</b>${esc(s.placa_chasis) || '-'}</div>
+  ${destinoHtml}
   <div class="row"><b>Zona</b>${esc(s.zona_instalacion) || '-'}</div>
   <div class="row"><b>IMEI</b>${esc(s.imei) || '-'}</div>
   ${s.ubicacion_url ? ('<div class="row"><b>Ubicación</b><a href="' + esc(s.ubicacion_url) + '" target="_blank">' + esc(s.ubicacion_url) + '</a></div>') : ''}
   ${s.nota ? ('<div class="row"><b>Nota</b>' + esc(s.nota) + '</div>') : ''}
   ${fotoHtml}
+  ${fotoGpsHtml}
 </div>
 <script>
 (async function() {
@@ -1564,7 +1703,9 @@ module.exports = function servicioHandler(req, res, sock) {
           res.writeHead(200, {'Content-Type':'application/json'});
           return res.end(JSON.stringify({ ok:false, requiereConfirmacion:true, error: 'El contacto en Alegra existe como "' + contacto.name + '", distinto al cliente del ticket ("' + s.cliente + '").' }));
         }
-        const descripcion = 'Vehiculo: ' + (s.vehiculo_marca || '') + ' ' + (s.vehiculo_modelo || '') + (s.imei ? (' - IMEI: ' + s.imei) : '');
+        const esTrasladoFactura = s.trabajo === 'Reinstalación (1 traslado)' || s.trabajo === 'Reinstalación (2 traslados)';
+        const descripcion = 'Vehiculo: ' + (s.vehiculo_marca || '') + ' ' + (s.vehiculo_modelo || '') + (s.imei ? (' - IMEI: ' + s.imei) : '') +
+          (esTrasladoFactura && s.vehiculo_destino_marca ? (' -> Destino: ' + s.vehiculo_destino_marca + ' ' + (s.vehiculo_destino_modelo || '') + (s.vehiculo_destino_placa ? (' placa ' + s.vehiculo_destino_placa) : '')) : '');
         const resultadoFactura = await crearFactura({ contactoId: contacto.id, itemId: itemId, descripcion: descripcion });
         if (!resultadoFactura.ok) {
           res.writeHead(200, {'Content-Type':'application/json'});
@@ -1696,6 +1837,14 @@ module.exports = function servicioHandler(req, res, sock) {
            (data.posee_apagado===''||data.posee_apagado===undefined)?null:data.posee_apagado, data.ubicacion_url||null, data.nota||null, data.imei||null];
         if (data.correo !== undefined) { sqlUpdate += ', correo=?'; paramsUpdate.push(data.correo||null); }
         if (data.pago_tecnico !== undefined) { sqlUpdate += ', pago_tecnico=?'; paramsUpdate.push(data.pago_tecnico||null); }
+        if (data.persona_recibe_nombre !== undefined) { sqlUpdate += ', persona_recibe_nombre=?'; paramsUpdate.push(data.persona_recibe_nombre||null); }
+        if (data.persona_recibe_telefono !== undefined) { sqlUpdate += ', persona_recibe_telefono=?'; paramsUpdate.push(data.persona_recibe_telefono||null); }
+        if (data.persona_recibe_nota !== undefined) { sqlUpdate += ', persona_recibe_nota=?'; paramsUpdate.push(data.persona_recibe_nota||null); }
+        if (data.vehiculo_destino_marca !== undefined) { sqlUpdate += ', vehiculo_destino_marca=?'; paramsUpdate.push(data.vehiculo_destino_marca||null); }
+        if (data.vehiculo_destino_modelo !== undefined) { sqlUpdate += ', vehiculo_destino_modelo=?'; paramsUpdate.push(data.vehiculo_destino_modelo||null); }
+        if (data.vehiculo_destino_color !== undefined) { sqlUpdate += ', vehiculo_destino_color=?'; paramsUpdate.push(data.vehiculo_destino_color||null); }
+        if (data.vehiculo_destino_placa !== undefined) { sqlUpdate += ', vehiculo_destino_placa=?'; paramsUpdate.push(data.vehiculo_destino_placa||null); }
+        if (data.vehiculo_destino_anio !== undefined) { sqlUpdate += ', vehiculo_destino_anio=?'; paramsUpdate.push(data.vehiculo_destino_anio||null); }
         sqlUpdate += ' WHERE id=?';
         paramsUpdate.push(data.id);
         conn.query(sqlUpdate, paramsUpdate, (err) => {
@@ -1733,14 +1882,18 @@ module.exports = function servicioHandler(req, res, sock) {
       }
       const file = Array.isArray(files.foto) ? files.foto[0] : files.foto;
       const idVal = Array.isArray(fields.id) ? fields.id[0] : fields.id;
-      const finalName = 'servicio_' + idVal + '_' + Date.now() + path.extname(file.originalFilename || file.newFilename || '.jpg');
+      const tipoVal = Array.isArray(fields.tipo) ? fields.tipo[0] : fields.tipo;
+      const esGps = tipoVal === 'gps';
+      const columna = esGps ? 'foto_gps_path' : 'foto_path';
+      const prefijo = esGps ? 'servicio_gps_' : 'servicio_';
+      const finalName = prefijo + idVal + '_' + Date.now() + path.extname(file.originalFilename || file.newFilename || '.jpg');
       const finalPath = path.join(UPLOAD_DIR, finalName);
       fs.renameSync(file.filepath, finalPath);
       const conn = db();
-      conn.query('UPDATE servicios_gps SET foto_path=? WHERE id=?', [finalName, idVal], () => {
+      conn.query('UPDATE servicios_gps SET ' + columna + '=? WHERE id=?', [finalName, idVal], (errUpd) => {
         conn.end();
         res.writeHead(200, {'Content-Type':'application/json'});
-        res.end(JSON.stringify({ ok: true, path: finalName }));
+        res.end(JSON.stringify({ ok: !errUpd, path: finalName, tipo: esGps ? 'gps' : 'vehiculo' }));
       });
     });
     return;
@@ -1752,7 +1905,35 @@ module.exports = function servicioHandler(req, res, sock) {
     req.on('end', async () => {
       let data;
       try { data = JSON.parse(body); } catch(e) { res.writeHead(400); return res.end('{}'); }
+      if (!data.id) {
+        res.writeHead(200, {'Content-Type':'application/json'});
+        return res.end(JSON.stringify({ ok:false, error:'Falta id' }));
+      }
       const t = TECNICOS[data.tecnico_id];
+      const connCheck = db();
+      connCheck.query('SELECT foto_path, foto_gps_path, trabajo, vehiculo_destino_marca, vehiculo_destino_placa FROM servicios_gps WHERE id=?', [data.id], (errCheck, rowsCheck) => {
+        connCheck.end();
+        if (errCheck || !rowsCheck || !rowsCheck.length) {
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error:'Servicio no encontrado' }));
+        }
+        const actual = rowsCheck[0];
+        const trabajoFinal = data.trabajo || actual.trabajo;
+        const esTrasladoServ = trabajoFinal === 'Reinstalación (1 traslado)' || trabajoFinal === 'Reinstalación (2 traslados)';
+        const faltantes = [];
+        if (!actual.foto_path) faltantes.push('foto del vehículo');
+        if (!actual.foto_gps_path) faltantes.push('foto de la ubicación del GPS');
+        const destinoMarca = data.vehiculo_destino_marca !== undefined ? data.vehiculo_destino_marca : actual.vehiculo_destino_marca;
+        const destinoPlaca = data.vehiculo_destino_placa !== undefined ? data.vehiculo_destino_placa : actual.vehiculo_destino_placa;
+        if (esTrasladoServ && (!destinoMarca || !destinoPlaca)) faltantes.push('vehículo destino (marca y placa)');
+        if (faltantes.length) {
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error: 'No se puede finalizar, falta: ' + faltantes.join(', ') }));
+        }
+        finalizarServicio();
+      });
+
+      function finalizarServicio() {
       const conn = db();
       conn.query(
         `UPDATE servicios_gps SET estado='terminado', estado_cierre=? WHERE id=?`,
@@ -1800,6 +1981,7 @@ module.exports = function servicioHandler(req, res, sock) {
           });
         }
       );
+      }
     });
     return;
   }
@@ -1914,6 +2096,82 @@ module.exports = function servicioHandler(req, res, sock) {
                       () => { marcarAplicado(); }
                     );
                   }
+                }
+              );
+            }
+          );
+        });
+      });
+    });
+    return;
+  }
+  if (req.method === 'POST' && parsed.pathname === '/api/servicio/aplicar-wox-traslado') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      let data;
+      try { data = JSON.parse(body); } catch(e) { res.writeHead(400); return res.end('{}'); }
+      if (!data.id) {
+        res.writeHead(200, {'Content-Type':'application/json'});
+        return res.end(JSON.stringify({ ok:false, error:'Falta id' }));
+      }
+      const conn = db();
+      conn.query('SELECT * FROM servicios_gps WHERE id=?', [data.id], (err, rows) => {
+        if (err || !rows || !rows.length) {
+          conn.end();
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error:'Servicio no encontrado' }));
+        }
+        const s = rows[0];
+        const esTrasladoServ = s.trabajo === 'Reinstalación (1 traslado)' || s.trabajo === 'Reinstalación (2 traslados)';
+        if (!esTrasladoServ || s.estado !== 'terminado') {
+          conn.end();
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error:'Solo aplica a traslados terminados' }));
+        }
+        if (s.aplicado_wox) {
+          conn.end();
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error:'Ya fue aplicado antes' }));
+        }
+        if (!s.imei) {
+          conn.end();
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error:'El servicio no tiene IMEI' }));
+        }
+        if (!s.vehiculo_destino_marca || !s.vehiculo_destino_placa) {
+          conn.end();
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:false, error:'Falta el vehículo destino (marca y placa)' }));
+        }
+        conn.query('SELECT id FROM devices WHERE imei=?', [s.imei], (err2, devRows) => {
+          if (err2 || !devRows || !devRows.length) {
+            conn.end();
+            res.writeHead(200, {'Content-Type':'application/json'});
+            return res.end(JSON.stringify({ ok:false, error:'IMEI no existe en GPSWOX' }));
+          }
+          const deviceId = devRows[0].id;
+          const nombreFinal = ((s.vehiculo_destino_marca || '') + ' ' + (s.vehiculo_destino_modelo || '') + ' ' + (s.vehiculo_destino_color || '')).replace(/\s+/g, ' ').trim();
+          // No se toca user_device_pivot: el vehículo destino es del mismo cliente, solo cambian los datos descriptivos del device.
+          // La nota conserva referencia al vehículo/servicio anterior para no perder trazabilidad.
+          const notaHistorico = 'Traslado ' + s.fecha + ' (servicio #' + s.id + '): antes ' + (s.vehiculo_marca || '') + ' ' + (s.vehiculo_modelo || '') + ' placa ' + (s.placa_chasis || '-') + '. ' + (s.nota || '');
+          conn.query(
+            "UPDATE devices SET name = ?, plate_number = ?, comment = ? WHERE id = ?",
+            [nombreFinal, s.vehiculo_destino_placa, notaHistorico, deviceId],
+            (err3) => {
+              conn.end();
+              if (err3) {
+                res.writeHead(200, {'Content-Type':'application/json'});
+                return res.end(JSON.stringify({ ok:false, error:'Error actualizando device: ' + err3.message }));
+              }
+              const connMarcar = db();
+              connMarcar.query(
+                'UPDATE servicios_gps SET aplicado_wox=1, aplicado_wox_at=NOW() WHERE id=?',
+                [data.id],
+                () => {
+                  connMarcar.end();
+                  res.writeHead(200, {'Content-Type':'application/json'});
+                  res.end(JSON.stringify({ ok: true, device_id: deviceId }));
                 }
               );
             }
