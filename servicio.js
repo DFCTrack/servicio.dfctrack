@@ -895,6 +895,19 @@ function renderBuscar() {
       <div id="n-wox-resultados" style="margin-top:8px;"></div>
       <div id="n-wox-seleccionados" style="margin-top:10px;"></div>
     </div>
+    <div id="n-bloque-destino" style="display:none;margin-top:14px;padding-top:14px;border-top:2px solid #eee;">
+      <div style="font-size:12px;font-weight:700;color:#128C7E;text-transform:uppercase;">🔺 Vehículo destino (opcional aquí, lo puede completar el técnico después)</div>
+      <div class="row2">
+        <div><label>Vehículo (marca)</label><input type="text" id="n-destino-marca"></div>
+        <div><label>Modelo</label><input type="text" id="n-destino-modelo"></div>
+      </div>
+      <div class="row2">
+        <div><label>Año</label><input type="text" id="n-destino-anio"></div>
+        <div><label>Color</label><input type="text" id="n-destino-color"></div>
+      </div>
+      <label>Placa</label>
+      <input type="text" id="n-destino-placa">
+    </div>
     <label>Ubicación (link de Google Maps)</label>
     <input type="url" id="n-ubicacion_url" placeholder="Ubicación del cliente">
     <label>Nota</label>
@@ -934,11 +947,15 @@ let ULTIMA_BUSQUEDA_WOX = [];
 function escHtmlServicio(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+function esTrasladoServicio(trabajo) {
+  return trabajo === 'Reinstalación (1 traslado)' || trabajo === 'Reinstalación (2 traslados)';
+}
 function actualizarModoTrabajoServicio() {
   const trabajo = document.getElementById('n-trabajo').value;
   const manual = document.getElementById('campos-vehiculo-manual');
   const wox = document.getElementById('campos-vehiculo-wox');
   const cantidadFila = document.getElementById('fila-cantidad-vehiculos');
+  const bloqueDestino = document.getElementById('n-bloque-destino');
   cantidadFila.style.display = trabajo ? 'block' : 'none';
   if (trabajo === 'Mantenimiento' || trabajo === 'Desinstalación' || trabajo === 'Reinstalación (1 traslado)' || trabajo === 'Reinstalación (2 traslados)') {
     manual.style.display = 'none';
@@ -947,6 +964,7 @@ function actualizarModoTrabajoServicio() {
     manual.style.display = 'block';
     wox.style.display = 'none';
   }
+  bloqueDestino.style.display = esTrasladoServicio(trabajo) ? 'block' : 'none';
 }
 document.getElementById('n-trabajo').addEventListener('change', actualizarModoTrabajoServicio);
 async function buscarClienteWoxServicio() {
@@ -1058,6 +1076,11 @@ function limpiarCampos() {
   document.getElementById('n-nota').value = '';
   document.getElementById('n-wox-buscar').value = '';
   document.getElementById('n-wox-resultados').innerHTML = '';
+  document.getElementById('n-destino-marca').value = '';
+  document.getElementById('n-destino-modelo').value = '';
+  document.getElementById('n-destino-color').value = '';
+  document.getElementById('n-destino-placa').value = '';
+  document.getElementById('n-destino-anio').value = '';
   VEHICULOS_WOX_SELECCIONADOS = [];
   VEHICULOS_MANUAL_SELECCIONADOS = [];
   renderSeleccionadosWox();
@@ -1085,6 +1108,7 @@ document.getElementById('btn-crear').addEventListener('click', async () => {
     alert('Agregaste ' + VEHICULOS_MANUAL_SELECCIONADOS.length + ' de ' + cantidadVehiculos + ' vehiculos indicados.');
     return;
   }
+  const esTraslado = esTrasladoServicio(trabajoVal);
   const body = {
     tecnico_id: document.getElementById('n-tecnico_id').value,
     cliente: document.getElementById('n-cliente').value,
@@ -1095,7 +1119,12 @@ document.getElementById('btn-crear').addEventListener('click', async () => {
     zona_instalacion: document.getElementById('n-zona_instalacion').value,
     ubicacion_url: document.getElementById('n-ubicacion_url').value,
     nota: document.getElementById('n-nota').value,
-    vehiculos: esWox ? VEHICULOS_WOX_SELECCIONADOS : (esManualMulti ? VEHICULOS_MANUAL_SELECCIONADOS : [])
+    vehiculos: esWox ? VEHICULOS_WOX_SELECCIONADOS : (esManualMulti ? VEHICULOS_MANUAL_SELECCIONADOS : []),
+    vehiculo_destino_marca: esTraslado ? document.getElementById('n-destino-marca').value : undefined,
+    vehiculo_destino_modelo: esTraslado ? document.getElementById('n-destino-modelo').value : undefined,
+    vehiculo_destino_color: esTraslado ? document.getElementById('n-destino-color').value : undefined,
+    vehiculo_destino_placa: esTraslado ? document.getElementById('n-destino-placa').value : undefined,
+    vehiculo_destino_anio: esTraslado ? document.getElementById('n-destino-anio').value : undefined
   };
   const r = await fetch('/api/servicio/crear?clave=' + encodeURIComponent(CLAVE), {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
@@ -1472,18 +1501,25 @@ module.exports = function servicioHandler(req, res, sock) {
       const t = TECNICOS[data.tecnico_id];
       if (!t) { res.writeHead(200, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'Técnico inválido'})); }
 
+      const esTrasladoCrear = data.trabajo === 'Reinstalación (1 traslado)' || data.trabajo === 'Reinstalación (2 traslados)';
       function insertarServicio(campos) {
         return new Promise((resolve) => {
           const token = generarToken();
           const conn = db();
           conn.query(
             `INSERT INTO servicios_gps (tecnico_id, tecnico_nombre, fecha, hora, cliente, celular, trabajo,
-             vehiculo_marca, vehiculo_modelo, color_vehiculo, placa_chasis, zona_instalacion, ubicacion_url, nota, imei, correo, token, estado)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asignado')`,
+             vehiculo_marca, vehiculo_modelo, color_vehiculo, placa_chasis, zona_instalacion, ubicacion_url, nota, imei, correo, token, estado,
+             vehiculo_destino_marca, vehiculo_destino_modelo, vehiculo_destino_color, vehiculo_destino_placa, vehiculo_destino_anio)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asignado', ?, ?, ?, ?, ?)`,
             [data.tecnico_id, t.nombre, data.fecha||new Date().toISOString().slice(0,10), data.hora||null,
              data.cliente||null, data.celular||null, data.trabajo||null,
              campos.vehiculo_marca||null, campos.vehiculo_modelo||null, campos.color_vehiculo||null, campos.placa_chasis||null,
-             campos.zona_instalacion||null, data.ubicacion_url||null, data.nota||null, campos.imei||null, campos.correo||null, token],
+             campos.zona_instalacion||null, data.ubicacion_url||null, data.nota||null, campos.imei||null, campos.correo||null, token,
+             esTrasladoCrear ? (data.vehiculo_destino_marca||null) : null,
+             esTrasladoCrear ? (data.vehiculo_destino_modelo||null) : null,
+             esTrasladoCrear ? (data.vehiculo_destino_color||null) : null,
+             esTrasladoCrear ? (data.vehiculo_destino_placa||null) : null,
+             esTrasladoCrear ? (data.vehiculo_destino_anio||null) : null],
             (err, result) => {
               conn.end();
               if (err) { resolve({ ok:false, error: err.message }); return; }
