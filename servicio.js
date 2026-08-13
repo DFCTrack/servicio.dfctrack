@@ -231,7 +231,7 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
     <img id="foto-preview">
     <div id="foto-estado" style="font-size:12px;color:#888;margin-top:4px;">${p.foto_path ? '✅ Ya subida' : 'Falta subir'}</div>
 
-    <label>Foto 2 — Ubicación del GPS (zona de instalación)</label>
+    <label>Foto 2 — Ubicación del GPS (zona de instalación) — opcional</label>
     <input type="file" id="foto_gps" accept="image/*" capture="environment">
     <img id="foto-gps-preview">
     <div id="foto-gps-estado" style="font-size:12px;color:#888;margin-top:4px;">${p.foto_gps_path ? '✅ Ya subida' : 'Falta subir'}</div>
@@ -402,7 +402,6 @@ document.getElementById('btn-terminar').addEventListener('click', async () => {
   if (val('trabajo') === 'Instalación' && !val('color_vehiculo')) faltantes.push('Color del vehículo');
   if (!val('zona_instalacion')) faltantes.push('Zona de instalación');
   if (!FOTO_VEHICULO_OK) faltantes.push('Foto del vehículo');
-  if (!FOTO_GPS_OK) faltantes.push('Foto de la ubicación del GPS');
   if (esTraslado(val('trabajo')) && (!val('vehiculo_destino_marca') || !val('vehiculo_destino_placa'))) faltantes.push('Vehículo destino (marca y placa)');
   if (faltantes.length) {
     faltaMsg.innerText = 'Faltan campos obligatorios: ' + faltantes.join(', ');
@@ -1958,7 +1957,6 @@ module.exports = function servicioHandler(req, res, sock) {
         const esTrasladoServ = trabajoFinal === 'Reinstalación (1 traslado)' || trabajoFinal === 'Reinstalación (2 traslados)';
         const faltantes = [];
         if (!actual.foto_path) faltantes.push('foto del vehículo');
-        if (!actual.foto_gps_path) faltantes.push('foto de la ubicación del GPS');
         const destinoMarca = data.vehiculo_destino_marca !== undefined ? data.vehiculo_destino_marca : actual.vehiculo_destino_marca;
         const destinoPlaca = data.vehiculo_destino_placa !== undefined ? data.vehiculo_destino_placa : actual.vehiculo_destino_placa;
         if (esTrasladoServ && (!destinoMarca || !destinoPlaca)) faltantes.push('vehículo destino (marca y placa)');
