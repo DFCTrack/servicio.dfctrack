@@ -246,6 +246,7 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
 
   <div id="falta-evidencia-msg" class="falta-evidencia" style="display:none;"></div>
   <button id="btn-terminar">Terminar y Enviar</button>
+  ${(isAdmin && p.estado !== 'terminado') ? '<button type="button" id="btn-guardar-admin" style="background:#555;">💾 Guardar</button>' : ''}
   ${isAdmin ? '<button type="button" id="btn-reenviar" style="background:#0b76ef;">🔄 Reenviar WS al técnico</button>' : ''}
   ${(isAdmin && p.estado === 'terminado') ? ('<button type="button" id="btn-crear-alegra" style="background:#f0932b;" ' + (p.alegra_invoice_id ? 'disabled' : '') + '>🧾 ' + (p.alegra_invoice_id ? ('Facturado ✓ #' + esc(p.alegra_invoice_number)) : 'Crear en Alegra') + '</button>') : ''}
   ${isAdmin ? '<a href="/servicio/login" style="display:block; text-align:center; margin-top:14px; color:#c53030; font-size:13px; font-weight:600; text-decoration:none;">🚪 Cerrar sesión</a>' : ''}
@@ -461,6 +462,31 @@ if (IMEI_PREFILL) { consultarEstado(IMEI_PREFILL); }
 actualizarCamposPorTrabajo();
 
 if (IS_ADMIN) {
+  const btnGuardarAdmin = document.getElementById('btn-guardar-admin');
+  if (btnGuardarAdmin) {
+    btnGuardarAdmin.addEventListener('click', async () => {
+      btnGuardarAdmin.disabled = true; btnGuardarAdmin.innerText = 'Guardando...';
+      await autoguardar();
+      btnGuardarAdmin.disabled = false; btnGuardarAdmin.innerText = '💾 Guardar';
+      document.getElementById('status').innerText = 'Guardado ✓';
+      const cerrar = confirm('Datos guardados. ¿Quieres además marcar este servicio como TERMINADO ahora? (cierre manual/contingencia, sin exigir fotos ni vehículo destino — úsalo solo si el trabajo se hizo por otra vía)');
+      if (!cerrar) return;
+      const body = campos();
+      body.id = RECORD_ID;
+      body.estado_cierre = val('estado_cierre') || 'Terminado';
+      body.cierre_manual = true;
+      const r = await fetch('/api/servicio/terminar?clave=' + CLAVE_ADMIN, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+      const data = await r.json();
+      if (data.ok) {
+        alert('Servicio cerrado manualmente ✓');
+        location.reload();
+      } else {
+        alert('Error: ' + (data.error || 'desconocido'));
+      }
+    });
+  }
   const btnAlegra = document.getElementById('btn-crear-alegra');
   if (btnAlegra) {
     btnAlegra.addEventListener('click', async () => {
@@ -1945,6 +1971,10 @@ module.exports = function servicioHandler(req, res, sock) {
         return res.end(JSON.stringify({ ok:false, error:'Falta id' }));
       }
       const t = TECNICOS[data.tecnico_id];
+      const esCierreManualAdmin = data.cierre_manual === true && parsed.query.clave === CLAVE_NUEVO;
+      if (esCierreManualAdmin) {
+        return finalizarServicio(true);
+      }
       const connCheck = db();
       connCheck.query('SELECT foto_path, foto_gps_path, trabajo, vehiculo_destino_marca, vehiculo_destino_placa FROM servicios_gps WHERE id=?', [data.id], (errCheck, rowsCheck) => {
         connCheck.end();
@@ -1964,14 +1994,15 @@ module.exports = function servicioHandler(req, res, sock) {
           res.writeHead(200, {'Content-Type':'application/json'});
           return res.end(JSON.stringify({ ok:false, error: 'No se puede finalizar, falta: ' + faltantes.join(', ') }));
         }
-        finalizarServicio();
+        finalizarServicio(false);
       });
 
-      function finalizarServicio() {
+      function finalizarServicio(esManual) {
       const conn = db();
+      const marcaManual = esManual ? ('\n[Cerrado manual por admin - contingencia, ' + new Date().toISOString().slice(0,16).replace('T',' ') + ']') : '';
       conn.query(
-        `UPDATE servicios_gps SET estado='terminado', estado_cierre=? WHERE id=?`,
-        [data.estado_cierre, data.id],
+        `UPDATE servicios_gps SET estado='terminado', estado_cierre=?, nota = CONCAT(IFNULL(nota,''), ?) WHERE id=?`,
+        [data.estado_cierre || 'Terminado', marcaManual, data.id],
         async (err) => {
           if (err) {
             conn.end();
