@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const formidable = require('formidable');
-const { buscarOCrearContacto, crearFactura, consultarEstadoFactura } = require('./alegra-cliente');
+const { buscarOCrearContacto, crearFactura, consultarEstadoFactura, buscarContactoPorCorreo } = require('./alegra-cliente');
 const ALEGRA_ITEMS_POR_TRABAJO = {
   'Instalación': '275',
   'Desinstalación': '166',
@@ -112,6 +112,8 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
     <label>Celular / WhatsApp</label>
     <input type="tel" id="celular" value="${esc(p.celular)}" placeholder="809-000-0000">
     ${isAdmin ? ('<label>Correo (solo admin)</label><input type="email" id="correo" value="' + esc(p.correo) + '" placeholder="correo@ejemplo.com">' +
+      '<button type="button" id="btn-sincronizar-alegra" style="width:auto;margin-top:8px;padding:8px 14px;background:#0b76ef;font-size:13px;">🔄 Sincronizar con Alegra</button>' +
+      '<div id="sync-alegra-resultado" style="display:none;margin-top:8px;padding:10px;background:#f7f7f7;border-radius:6px;font-size:13px;"></div>' +
       '<label>Pago a técnico</label><select id="pago_tecnico"><option value="pendiente" ' + (p.pago_tecnico!=='pagado'?'selected':'') + '>Pendiente</option><option value="pagado" ' + (p.pago_tecnico==='pagado'?'selected':'') + '>Pagado</option></select>') : ''}
   </div>
 
@@ -462,6 +464,55 @@ if (IMEI_PREFILL) { consultarEstado(IMEI_PREFILL); }
 actualizarCamposPorTrabajo();
 
 if (IS_ADMIN) {
+  const btnSyncAlegra = document.getElementById('btn-sincronizar-alegra');
+  if (btnSyncAlegra) {
+    btnSyncAlegra.addEventListener('click', async () => {
+      const cont = document.getElementById('sync-alegra-resultado');
+      const correoActual = document.getElementById('correo').value.trim();
+      if (!correoActual) {
+        cont.style.display = 'block';
+        cont.innerHTML = 'Escribe el correo del cliente primero.';
+        return;
+      }
+      btnSyncAlegra.disabled = true; btnSyncAlegra.innerText = 'Consultando...';
+      cont.style.display = 'block';
+      cont.innerHTML = 'Buscando en Alegra...';
+      try {
+        const r = await fetch('/api/servicio/sincronizar-alegra?clave=' + CLAVE_ADMIN + '&correo=' + encodeURIComponent(correoActual) + '&id=' + RECORD_ID);
+        const data = await r.json();
+        if (!data.ok) {
+          cont.innerHTML = 'Error: ' + (data.error || 'desconocido');
+        } else if (!data.existe) {
+          cont.innerHTML = 'No existe todavía en Alegra con ese correo. Se creará automáticamente cuando factures.';
+        } else if (data.coincide) {
+          cont.innerHTML = '✅ Coincide con Alegra — ' + data.alegra_nombre + (data.alegra_telefono ? (' · ' + data.alegra_telefono) : '');
+        } else {
+          cont.innerHTML =
+            '<div>Los datos no coinciden:</div>' +
+            '<div style="margin-top:6px;"><b>En Alegra:</b> ' + (data.alegra_nombre || '-') + (data.alegra_telefono ? (' · ' + data.alegra_telefono) : '') + '</div>' +
+            '<div><b>En el ticket:</b> ' + (document.getElementById('cliente').value || '-') + ' · ' + (document.getElementById('celular').value || '-') + '</div>' +
+            '<div style="margin-top:8px;display:flex;gap:8px;">' +
+            '<button type="button" id="btn-usar-alegra" style="width:auto;padding:6px 12px;background:#128C7E;font-size:12px;">Usar datos de Alegra</button>' +
+            '<button type="button" id="btn-usar-ticket" style="width:auto;padding:6px 12px;background:#888;font-size:12px;">Dejar como está</button>' +
+            '</div>';
+          const btnUsarAlegra = document.getElementById('btn-usar-alegra');
+          const btnUsarTicket = document.getElementById('btn-usar-ticket');
+          if (btnUsarAlegra) btnUsarAlegra.addEventListener('click', () => {
+            if (data.alegra_nombre) document.getElementById('cliente').value = data.alegra_nombre;
+            if (data.alegra_telefono) document.getElementById('celular').value = data.alegra_telefono;
+            programarAutoguardado();
+            cont.innerHTML = '✅ Datos de Alegra aplicados al ticket. Se guardará automáticamente.';
+          });
+          if (btnUsarTicket) btnUsarTicket.addEventListener('click', () => {
+            cont.innerHTML = 'Se dejó el ticket como estaba.';
+          });
+        }
+      } catch (e) {
+        cont.innerHTML = 'Error de conexión al consultar Alegra.';
+      }
+      btnSyncAlegra.disabled = false; btnSyncAlegra.innerText = '🔄 Sincronizar con Alegra';
+    });
+  }
   const btnGuardarAdmin = document.getElementById('btn-guardar-admin');
   if (btnGuardarAdmin) {
     btnGuardarAdmin.addEventListener('click', async () => {
@@ -2244,6 +2295,41 @@ module.exports = function servicioHandler(req, res, sock) {
         });
       });
     });
+    return;
+  }
+  if (req.method === 'GET' && parsed.pathname === '/api/servicio/sincronizar-alegra') {
+    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    const correo = (parsed.query.correo || '').trim();
+    const idVal = parsed.query.id;
+    if (!correo) { res.writeHead(200, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'Falta correo'})); }
+    (async () => {
+      try {
+        const contacto = await buscarContactoPorCorreo(correo);
+        if (!contacto) {
+          res.writeHead(200, {'Content-Type':'application/json'});
+          return res.end(JSON.stringify({ ok:true, existe:false }));
+        }
+        const conn = db();
+        conn.query('SELECT cliente, celular FROM servicios_gps WHERE id=?', [idVal], (err, rows) => {
+          conn.end();
+          const s = (rows && rows[0]) || {};
+          const nombreAlegra = String(contacto.name || '').trim();
+          const telAlegra = String(contacto.phonePrimary || '').trim();
+          const nombreTicket = String(s.cliente || '').trim();
+          const telTicket = String(s.celular || '').trim();
+          const coincide = nombreAlegra.toLowerCase() === nombreTicket.toLowerCase() &&
+            (!telAlegra || !telTicket || telAlegra.replace(/\D/g,'').slice(-10) === telTicket.replace(/\D/g,'').slice(-10));
+          res.writeHead(200, {'Content-Type':'application/json'});
+          res.end(JSON.stringify({
+            ok:true, existe:true, coincide,
+            alegra_nombre: nombreAlegra, alegra_telefono: telAlegra
+          }));
+        });
+      } catch (e) {
+        res.writeHead(200, {'Content-Type':'application/json'});
+        res.end(JSON.stringify({ ok:false, error: e.message }));
+      }
+    })();
     return;
   }
   res.writeHead(404);

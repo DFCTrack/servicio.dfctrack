@@ -170,4 +170,4 @@ async function consultarEstadoFactura(invoiceId) {
     return { ok: false, error: error.message };
   }
 }
-module.exports = { buscarOCrearContacto, crearFactura, consultarEstadoFactura };
+module.exports = { buscarOCrearContacto, crearFactura, consultarEstadoFactura, buscarContactoPorCorreo };
