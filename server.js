@@ -135,6 +135,8 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(404);
             res.end('QR no disponible aun');
         }
+    } else if (req.url.startsWith('/api/renovacion')) {
+        require('./renovacion')(req, res, sock);
     } else if (req.url.startsWith('/servicio') || req.url.startsWith('/api/servicio') || req.url.startsWith('/nuevo') || req.url.startsWith('/buscar') || req.url.startsWith('/uploads/servicios')) {
         require('./servicio')(req, res, sock);
     } else if (req.method === 'POST' && req.url === '/registro_wsc') {
