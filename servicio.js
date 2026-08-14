@@ -1816,7 +1816,21 @@ module.exports = function servicioHandler(req, res, sock) {
           return res.end(JSON.stringify({ ok:false, requiereConfirmacion:true, error: 'El contacto en Alegra existe como "' + contacto.name + '", distinto al cliente del ticket ("' + s.cliente + '").' }));
         }
         const esTrasladoFactura = s.trabajo === 'Reinstalación (1 traslado)' || s.trabajo === 'Reinstalación (2 traslados)';
-        const descripcion = 'Vehiculo: ' + (s.vehiculo_marca || '') + ' ' + (s.vehiculo_modelo || '') + (s.imei ? (' - IMEI: ' + s.imei) : '') +
+        let deviceId = null;
+        if (s.imei) {
+          try {
+            deviceId = await new Promise((resolve) => {
+              const connDev = db();
+              connDev.query('SELECT id FROM devices WHERE imei=? LIMIT 1', [s.imei], (errDev, rowsDev) => {
+                connDev.end();
+                resolve(rowsDev && rowsDev[0] ? rowsDev[0].id : null);
+              });
+            });
+          } catch (eDev) { deviceId = null; }
+        }
+        const imei6 = s.imei ? ('...' + String(s.imei).slice(-6)) : '';
+        const descripcion = 'Vehiculo: ' + (s.vehiculo_marca || '') + ' ' + (s.vehiculo_modelo || '') +
+          (deviceId ? (' - ID: ' + deviceId) : '') + (imei6 ? (' - IMEI: ' + imei6) : '') +
           (esTrasladoFactura && s.vehiculo_destino_marca ? (' -> Destino: ' + s.vehiculo_destino_marca + ' ' + (s.vehiculo_destino_modelo || '') + (s.vehiculo_destino_placa ? (' placa ' + s.vehiculo_destino_placa) : '')) : '');
         const resultadoFactura = await crearFactura({ contactoId: contacto.id, itemId: itemId, descripcion: descripcion });
         if (!resultadoFactura.ok) {

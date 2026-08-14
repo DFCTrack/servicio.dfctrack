@@ -123,7 +123,15 @@ module.exports = async function (req, res, sock) {
         const contactoId = contactoRes.contacto.id;
 
         let vehiculosTxt = '';
-        try { vehiculosTxt = JSON.parse(row.vehiculos || '[]').join(', '); } catch (e) { vehiculosTxt = row.vehiculos || ''; }
+        try {
+          const vArr = JSON.parse(row.vehiculos || '[]');
+          vehiculosTxt = vArr.map((v) => {
+            if (typeof v === 'string') return v;
+            const idTxt = v.id ? (' - ID: ' + v.id) : '';
+            const imeiTxt = v.imei6 ? (' - IMEI: ...' + v.imei6) : '';
+            return (v.nombre || 'Vehiculo') + idTxt + imeiTxt;
+          }).join('; ');
+        } catch (e) { vehiculosTxt = row.vehiculos || ''; }
         const descripcion = `Renovacion 12 meses GPS - ${row.cantidad} vehiculo(s): ${vehiculosTxt}`.slice(0, 500);
 
         const facturaRes = await crearFacturaRenovacion({ contactoId, cantidad: row.cantidad, descripcion });
