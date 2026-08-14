@@ -45,6 +45,23 @@ function limpiarNumeroWA(num) {
   return null;
 }
 
+async function enviarFacturaPorCorreo(facturaId) {
+  try {
+    const res = await fetch(`${ALEGRA_BASE_URL}/invoices/${facturaId}/email`, {
+      method: 'POST',
+      headers: { Authorization: getAuthHeader(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (!res.ok) {
+      const detalle = await res.text();
+      return { ok: false, error: `Alegra respondio ${res.status} al enviar correo: ${detalle}` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 async function crearFacturaRenovacion({ contactoId, cantidad, descripcion }) {
   const hoy = new Date().toISOString().slice(0, 10);
   const body = {
@@ -127,10 +144,16 @@ module.exports = async function (req, res, sock) {
         });
         conn.end();
 
+        const correoRes = await enviarFacturaPorCorreo(factura.id);
+        if (!correoRes.ok) console.log('Error enviando factura por correo:', correoRes.error);
+
         const numero = limpiarNumeroWA(row.cliente_whatsapp);
         if (numero && sock) {
           try {
-            const msg = `✅ *Pago recibido - DFC Track GPS*\n\nTu renovacion fue confirmada y facturada.\n\n🧾 Factura: ${numeroFactura}\n🚗 Vehiculos: ${row.cantidad}\n💵 Total: RD$${Number(row.monto_sin_itbis).toLocaleString()}\n\nGracias por tu pago. Tu servicio GPS quedo renovado por 12 meses.`;
+            const avisoCorreo = correoRes.ok
+              ? `Tu factura (PDF) fue enviada a tu correo: ${row.cliente_correo}`
+              : `Tu factura quedo registrada, pero hubo un problema enviandola a tu correo -- escribenos si no te llega.`;
+            const msg = `✅ *Pago recibido - DFC Track GPS*\n\nTu renovacion fue confirmada y facturada.\n\n🧾 Factura: ${numeroFactura}\n🚗 Vehiculos: ${row.cantidad}\n💵 Total: RD$${Number(row.monto_sin_itbis).toLocaleString()}\n\n📧 ${avisoCorreo}\n\nGracias por tu pago. Tu servicio GPS quedo renovado por 12 meses.`;
             await sock.sendMessage(`${numero}@s.whatsapp.net`, { text: msg });
           } catch (eWA) { console.log('Error enviando WA renovacion:', eWA.message); }
         }
