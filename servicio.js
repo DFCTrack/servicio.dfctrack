@@ -3,6 +3,7 @@ const url = require('url');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const formidable = require('formidable');
 const { buscarOCrearContacto, crearFactura, consultarEstadoFactura, buscarContactoPorCorreo } = require('./alegra-cliente');
 const ALEGRA_ITEMS_POR_TRABAJO = {
@@ -16,7 +17,7 @@ const ALEGRA_ITEMS_POR_TRABAJO = {
 const DB_CONFIG = {
   host: '154.38.189.98',
   user: 'wsc_registro',
-  password: 'Wr8Kd3mNpQ7fXz2LtY9bVc4H',
+  password: process.env.DB_PASS_WSC_REGISTRO,
   database: 'gpswox_web'
 };
 
@@ -29,11 +30,43 @@ const TECNICOS = {
   '2099': { nombre: 'Jimmy San Juan', grupo_imei: 2099, whatsapp: '120363421362794585@g.us' },
 };
 
-const CLAVE_NUEVO = 'DFC2026Servicio';
-const ADMIN_USER = 'admin';
-const ADMIN_PASS = 'admin2511';
+const CLAVE_NUEVO = process.env.SERVICIO_CLAVE || '';
+const ADMIN_USER = process.env.SERVICIO_ADMIN_USER || 'admin';
+const ADMIN_PASS_HASH = process.env.SERVICIO_ADMIN_PASS_HASH || '';
 const UPLOAD_DIR = '/opt/baileys-servicio/uploads/servicios';
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// --- Sesion real (cookie), ademas de la clave por URL, para no romper enlaces existentes ---
+const SESIONES = new Map(); // sessionId -> expiraEn (ms)
+const SESION_DURACION_MS = 12 * 60 * 60 * 1000; // 12 horas
+function crearSesion() {
+  const id = crypto.randomBytes(32).toString('hex');
+  SESIONES.set(id, Date.now() + SESION_DURACION_MS);
+  return id;
+}
+function destruirSesion(id) { if (id) SESIONES.delete(id); }
+function leerCookie(req, nombre) {
+  const raw = req.headers.cookie || '';
+  const partes = raw.split(';');
+  for (let i = 0; i < partes.length; i++) {
+    const p = partes[i].trim();
+    const idx = p.indexOf('=');
+    if (idx > -1 && p.slice(0, idx) === nombre) return decodeURIComponent(p.slice(idx + 1));
+  }
+  return null;
+}
+function idSesion(req) { return leerCookie(req, 'dfc_sesion'); }
+function sesionValida(req) {
+  const id = idSesion(req);
+  if (!id || !SESIONES.has(id)) return false;
+  if (Date.now() > SESIONES.get(id)) { SESIONES.delete(id); return false; }
+  return true;
+}
+function accesoAdminValido(req, query) {
+  if (sesionValida(req)) return true;
+  const recibida = (query && (query.clave || query.admin)) || '';
+  return !!CLAVE_NUEVO && recibida === CLAVE_NUEVO;
+}
 
 function db() { return mysql.createConnection(DB_CONFIG); }
 function generarToken() { return crypto.randomBytes(6).toString('hex'); }
@@ -251,7 +284,7 @@ function renderForm(tecnicoId, recordId, prefill, isAdmin) {
   ${(isAdmin && p.estado !== 'terminado') ? '<button type="button" id="btn-guardar-admin" style="background:#555;">💾 Guardar</button>' : ''}
   ${isAdmin ? '<button type="button" id="btn-reenviar" style="background:#0b76ef;">🔄 Reenviar WS al técnico</button>' : ''}
   ${(isAdmin && p.estado === 'terminado') ? ('<button type="button" id="btn-crear-alegra" style="background:#f0932b;" ' + (p.alegra_invoice_id ? 'disabled' : '') + '>🧾 ' + (p.alegra_invoice_id ? ('Facturado ✓ #' + esc(p.alegra_invoice_number)) : 'Crear en Alegra') + '</button>') : ''}
-  ${isAdmin ? '<a href="/servicio/login" style="display:block; text-align:center; margin-top:14px; color:#c53030; font-size:13px; font-weight:600; text-decoration:none;">🚪 Cerrar sesión</a>' : ''}
+  ${isAdmin ? '<a href="/servicio/login?logout=1" style="display:block; text-align:center; margin-top:14px; color:#c53030; font-size:13px; font-weight:600; text-decoration:none;">🚪 Cerrar sesión</a>' : ''}
   ${renderWoxBox(p, isAdmin)}
   <div id="status">Guardado automático activado</div>
 </div>
@@ -710,8 +743,8 @@ if (IS_ADMIN) {
 
 function renderResumen(s) {
   const t = TECNICOS[String(s.tecnico_id)];
-  const fotoHtml = s.foto_path ? ('<div class="row"><b>Foto vehículo</b></div><img src="/uploads/servicios/' + s.foto_path + '" style="width:100%;border-radius:8px;margin-top:6px;">') : '';
-  const fotoGpsHtml = s.foto_gps_path ? ('<div class="row" style="margin-top:14px;"><b>Foto ubicación del GPS</b></div><img src="/uploads/servicios/' + s.foto_gps_path + '" style="width:100%;border-radius:8px;margin-top:6px;">') : '';
+  const fotoHtml = s.foto_path ? ('<div class="row"><b>Foto vehículo</b></div><img src="/uploads/servicios/' + s.foto_path + '?token=' + encodeURIComponent(s.token) + '" style="width:100%;border-radius:8px;margin-top:6px;">') : '';
+  const fotoGpsHtml = s.foto_gps_path ? ('<div class="row" style="margin-top:14px;"><b>Foto ubicación del GPS</b></div><img src="/uploads/servicios/' + s.foto_gps_path + '?token=' + encodeURIComponent(s.token) + '" style="width:100%;border-radius:8px;margin-top:6px;">') : '';
   const esTrasladoServ = s.trabajo === 'Reinstalación (1 traslado)' || s.trabajo === 'Reinstalación (2 traslados)';
   const personaRecibeHtml = s.persona_recibe_nombre ? (
     '<div class="row"><b>Persona que recibió</b>' + esc(s.persona_recibe_nombre) +
@@ -911,7 +944,7 @@ function renderBuscar() {
   <div id="inventario-tecnicos" style="background:#fff;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">Cargando inventario...</div>
   <button class="btn" id="btn-toggle-nuevo" style="margin-bottom:20px;">➕ Nuevo Servicio</button>
   <button class="btn" id="btn-limpiar" style="margin-bottom:20px; margin-left:8px; background:#888;">🧹 Limpiar</button>
-  <a href="/servicio/login" style="display:inline-block; margin-bottom:20px; margin-left:8px; padding:10px 16px; background:#c53030; color:#fff; border-radius:6px; font-size:14px; font-weight:600; text-decoration:none;">🚪 Cerrar sesión</a>
+  <a href="/servicio/login?logout=1" style="display:inline-block; margin-bottom:20px; margin-left:8px; padding:10px 16px; background:#c53030; color:#fff; border-radius:6px; font-size:14px; font-weight:600; text-decoration:none;">🚪 Cerrar sesión</a>
 
   <div class="card" id="card-nuevo">
     <label>Técnico</label>
@@ -1422,6 +1455,14 @@ module.exports = function servicioHandler(req, res, sock) {
   const parsed = url.parse(req.url, true);
 
   if (req.method === 'GET' && parsed.pathname === '/servicio/login') {
+    if (parsed.query.logout === '1') {
+      destruirSesion(idSesion(req));
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Set-Cookie': 'dfc_sesion=; HttpOnly; Secure; SameSite=Lax; Max-Age=0; Path=/'
+      });
+      return res.end(renderLogin());
+    }
     res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
     return res.end(renderLogin());
   }
@@ -1431,10 +1472,16 @@ module.exports = function servicioHandler(req, res, sock) {
     req.on('end', () => {
       let data;
       try { data = JSON.parse(body); } catch(e) { res.writeHead(400); return res.end('{}'); }
-      res.writeHead(200, {'Content-Type':'application/json'});
-      if (data.usuario === ADMIN_USER && data.password === ADMIN_PASS) {
+      const claveOk = ADMIN_PASS_HASH && data.usuario === ADMIN_USER && bcrypt.compareSync(String(data.password || ''), ADMIN_PASS_HASH);
+      if (claveOk) {
+        const sid = crearSesion();
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': 'dfc_sesion=' + sid + '; HttpOnly; Secure; SameSite=Lax; Max-Age=' + (SESION_DURACION_MS / 1000) + '; Path=/'
+        });
         return res.end(JSON.stringify({ ok: true, redirect: '/buscar?clave=' + encodeURIComponent(CLAVE_NUEVO) }));
       }
+      res.writeHead(200, {'Content-Type':'application/json'});
       return res.end(JSON.stringify({ ok: false }));
     });
     return;
@@ -1462,13 +1509,13 @@ module.exports = function servicioHandler(req, res, sock) {
     }
   }
   if (req.method === 'GET' && parsed.pathname === '/nuevo') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403); return res.end('No autorizado'); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403); return res.end('No autorizado'); }
     res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
     return res.end(renderNuevo());
   }
 
   if (req.method === 'GET' && parsed.pathname === '/buscar') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403); return res.end('No autorizado'); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403); return res.end('No autorizado'); }
     res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
     return res.end(renderBuscar());
   }
@@ -1477,14 +1524,26 @@ module.exports = function servicioHandler(req, res, sock) {
     const filename = path.basename(parsed.pathname);
     const filePath = path.join(UPLOAD_DIR, filename);
     if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('No encontrado'); }
-    const ext = path.extname(filename).toLowerCase();
-    const mime = ext === '.png' ? 'image/png' : (ext === '.webp' ? 'image/webp' : 'image/jpeg');
-    res.writeHead(200, {'Content-Type': mime});
-    return res.end(fs.readFileSync(filePath));
+    const servir = function () {
+      const ext = path.extname(filename).toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : (ext === '.webp' ? 'image/webp' : 'image/jpeg');
+      res.writeHead(200, {'Content-Type': mime});
+      res.end(fs.readFileSync(filePath));
+    };
+    if (sesionValida(req)) return servir();
+    const tokenQuery = parsed.query.token || '';
+    if (!tokenQuery) { res.writeHead(403); return res.end('No autorizado'); }
+    const conn = db();
+    conn.query('SELECT id FROM servicios_gps WHERE token=? AND (foto_path=? OR foto_gps_path=?) LIMIT 1', [tokenQuery, filename, filename], (err, rows) => {
+      conn.end();
+      if (err || !rows || !rows.length) { res.writeHead(403); return res.end('No autorizado'); }
+      servir();
+    });
+    return;
   }
 
   if (req.method === 'GET' && parsed.pathname === '/api/servicio/buscar') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403); return res.end('[]'); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403); return res.end('[]'); }
     const q = '%' + (parsed.query.q || '') + '%';
     const conn = db();
     conn.query(
@@ -1519,7 +1578,7 @@ module.exports = function servicioHandler(req, res, sock) {
   }
 
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/pago-tecnico') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
@@ -1537,7 +1596,7 @@ module.exports = function servicioHandler(req, res, sock) {
     return;
   }
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/pago-tecnico') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
@@ -1555,7 +1614,7 @@ module.exports = function servicioHandler(req, res, sock) {
     return;
   }
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/eliminar') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     const token = parsed.query.token;
     if (!token) { res.writeHead(400, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'Falta token'})); }
     const conn = db();
@@ -1568,7 +1627,7 @@ module.exports = function servicioHandler(req, res, sock) {
   }
 
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/crear') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
@@ -1701,12 +1760,13 @@ module.exports = function servicioHandler(req, res, sock) {
         }
         const s = rows[0];
         res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
-        if (s.estado === 'terminado' && parsed.query.admin !== CLAVE_NUEVO) {
+        const esAdminAqui = accesoAdminValido(req, parsed.query);
+        if (s.estado === 'terminado' && !esAdminAqui) {
           res.end(renderResumen(s));
         } else {
-          res.end(renderForm(String(s.tecnico_id), s.id, s, parsed.query.admin === CLAVE_NUEVO));
+          res.end(renderForm(String(s.tecnico_id), s.id, s, esAdminAqui));
         }
-        if (parsed.query.admin !== CLAVE_NUEVO && !s.visto) {
+        if (!esAdminAqui && !s.visto) {
           const connVisto = db();
           connVisto.query('UPDATE servicios_gps SET visto=1, visto_at=NOW() WHERE token=? AND visto=0', [s.token], () => connVisto.end());
         }
@@ -1775,7 +1835,7 @@ module.exports = function servicioHandler(req, res, sock) {
   }
 
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/crear-alegra') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
@@ -2036,7 +2096,7 @@ module.exports = function servicioHandler(req, res, sock) {
         return res.end(JSON.stringify({ ok:false, error:'Falta id' }));
       }
       const t = TECNICOS[data.tecnico_id];
-      const esCierreManualAdmin = data.cierre_manual === true && parsed.query.clave === CLAVE_NUEVO;
+      const esCierreManualAdmin = data.cierre_manual === true && accesoAdminValido(req, parsed.query);
       if (esCierreManualAdmin) {
         return finalizarServicio(true);
       }
@@ -2312,7 +2372,7 @@ module.exports = function servicioHandler(req, res, sock) {
     return;
   }
   if (req.method === 'GET' && parsed.pathname === '/api/servicio/sincronizar-alegra') {
-    if (parsed.query.clave !== CLAVE_NUEVO) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     const correo = (parsed.query.correo || '').trim();
     const idVal = parsed.query.id;
     if (!correo) { res.writeHead(200, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'Falta correo'})); }

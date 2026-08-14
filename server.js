@@ -23,7 +23,7 @@ const mysql = require('mysql2');
 const DB_CONFIG_CHAT = {
     host: '154.38.189.98',
     user: 'wsc_registro',
-    password: 'Wr8Kd3mNpQ7fXz2LtY9bVc4H',
+    password: process.env.DB_PASS_WSC_REGISTRO,
     database: 'gpswox_web'
 };
 function dbChat() { return mysql.createConnection(DB_CONFIG_CHAT); }
@@ -126,7 +126,7 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({ enviado: false, error: e.message }));
             }
         });
-    } else if (req.url === "/qr?token=DFC2026") {
+    } else if (req.url === "/qr?token=" + (process.env.QR_ACCESS_TOKEN || '__sin_configurar__')) {
         try {
             const qr = fs.readFileSync('/opt/baileys/qr.png');
             res.writeHead(200, {'Content-Type': 'image/png'});
@@ -163,7 +163,7 @@ const server = http.createServer(async (req, res) => {
     } else if (req.url === '/health') {
         res.writeHead(200, {'Content-Type': 'application/json'});
         res.end(JSON.stringify({ status: sock ? 'online' : 'offline' }));
-    } else if (req.url === '/groups?token=DFC2026') {
+    } else if (req.url === '/groups?token=' + (process.env.QR_ACCESS_TOKEN || '__sin_configurar__')) {
         try {
             const groups = await sock.groupFetchAllParticipating();
             const list = Object.values(groups).map(g => ({ id: g.id, subject: g.subject }));
