@@ -45,12 +45,12 @@ function limpiarNumeroWA(num) {
   return null;
 }
 
-async function enviarFacturaPorCorreo(facturaId) {
+async function enviarFacturaPorCorreo(facturaId, correoDestino) {
   try {
     const res = await fetch(`${ALEGRA_BASE_URL}/invoices/${facturaId}/email`, {
       method: 'POST',
       headers: { Authorization: getAuthHeader(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({ emails: [correoDestino] })
     });
     if (!res.ok) {
       const detalle = await res.text();
@@ -152,7 +152,7 @@ module.exports = async function (req, res, sock) {
         });
         conn.end();
 
-        const correoRes = await enviarFacturaPorCorreo(factura.id);
+        const correoRes = await enviarFacturaPorCorreo(factura.id, row.cliente_correo);
         if (!correoRes.ok) console.log('Error enviando factura por correo:', correoRes.error);
 
         const numero = limpiarNumeroWA(row.cliente_whatsapp);
