@@ -84,7 +84,7 @@ module.exports = async function (req, res, sock) {
         }
         conn = db();
         const row = await new Promise((resolve, reject) => {
-          conn.query('SELECT * FROM renovaciones_pendientes WHERE referencia=? LIMIT 1', [referencia], (err, rows) => err ? reject(err) : resolve(rows && rows[0]));
+          conn.query('SELECT * FROM renovaciones_tarjeta_pendientes WHERE referencia=? LIMIT 1', [referencia], (err, rows) => err ? reject(err) : resolve(rows && rows[0]));
         });
         if (!row) {
           conn.end();
@@ -120,7 +120,7 @@ module.exports = async function (req, res, sock) {
 
         await new Promise((resolve, reject) => {
           conn.query(
-            'UPDATE renovaciones_pendientes SET estado="pagado_facturado", alegra_invoice_id=?, alegra_invoice_number=?, azul_aprobacion=?, pagado_at=NOW() WHERE id=?',
+            'UPDATE renovaciones_tarjeta_pendientes SET estado="pagado_facturado", alegra_invoice_id=?, alegra_invoice_number=?, azul_aprobacion=?, pagado_at=NOW() WHERE id=?',
             [factura.id, numeroFactura, data.azul_aprobacion || null, row.id],
             (err) => err ? reject(err) : resolve()
           );
