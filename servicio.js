@@ -68,6 +68,31 @@ function accesoAdminValido(req, query) {
   return !!CLAVE_NUEVO && recibida === CLAVE_NUEVO;
 }
 
+// Busca el grupo de dispositivos (device_groups) que ya tiene un usuario de WOX; si no tiene, crea uno con el nombre del cliente.
+function resolverGrupoCliente(userId, nombreCliente, cb) {
+  const conn = db();
+  conn.query(
+    "SELECT id FROM device_groups WHERE user_id=? AND (deleted_at IS NULL OR deleted_at='') ORDER BY id ASC LIMIT 1",
+    [userId],
+    (err, rows) => {
+      if (!err && rows && rows.length) {
+        conn.end();
+        return cb(null, rows[0].id);
+      }
+      const titulo = (nombreCliente || ('Cliente ' + userId)).toString().trim().slice(0, 255) || ('Cliente ' + userId);
+      conn.query(
+        'INSERT INTO device_groups (user_id, title, open, updated_at) VALUES (?, ?, 0, NOW())',
+        [userId, titulo],
+        (err2, result) => {
+          conn.end();
+          if (err2) return cb(err2);
+          cb(null, result.insertId);
+        }
+      );
+    }
+  );
+}
+
 function db() { return mysql.createConnection(DB_CONFIG); }
 function generarToken() { return crypto.randomBytes(6).toString('hex'); }
 function esc(v) { return (v === null || v === undefined) ? '' : String(v).replace(/"/g, '&quot;'); }
@@ -635,7 +660,7 @@ if (IS_ADMIN) {
     btnAplicarTraslado.addEventListener('click', async () => {
       btnAplicarTraslado.disabled = true; btnAplicarTraslado.innerText = 'Aplicando...';
       try {
-        const r = await fetch('/api/servicio/aplicar-wox-traslado', {
+        const r = await fetch('/api/servicio/aplicar-wox-traslado?clave=' + encodeURIComponent(CLAVE_ADMIN), {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ id: RECORD_ID })
         });
@@ -660,7 +685,7 @@ if (IS_ADMIN) {
   async function buscarClienteAuto() {
     if (!boxCliente) return;
     try {
-      const r = await fetch('/api/servicio/buscar-cliente?celular=' + encodeURIComponent(val('celular')));
+      const r = await fetch('/api/servicio/buscar-cliente?celular=' + encodeURIComponent(val('celular')) + '&clave=' + encodeURIComponent(CLAVE_ADMIN));
       const data = await r.json();
       if (data.matches && data.matches.length === 1) {
         clienteSeleccionadoId = data.matches[0].id;
@@ -686,7 +711,7 @@ if (IS_ADMIN) {
       const q = buscarInput.value;
       buscarTimer = setTimeout(async () => {
         if (q.length < 3) return;
-        const r = await fetch('/api/servicio/buscar-cliente?email=' + encodeURIComponent(q));
+        const r = await fetch('/api/servicio/buscar-cliente?email=' + encodeURIComponent(q) + '&clave=' + encodeURIComponent(CLAVE_ADMIN));
         const data = await r.json();
         const cont = document.getElementById('wox-cliente-resultados');
         if (!data.matches || !data.matches.length) {
@@ -717,7 +742,7 @@ if (IS_ADMIN) {
       if (!clienteSeleccionadoId) { alert('Selecciona el cliente primero'); return; }
       btnAplicar.disabled = true; btnAplicar.innerText = 'Aplicando...';
       try {
-        const r = await fetch('/api/servicio/aplicar-wox', {
+        const r = await fetch('/api/servicio/aplicar-wox?clave=' + encodeURIComponent(CLAVE_ADMIN), {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ id: RECORD_ID, name: val('wox_name'), cliente_user_id: clienteSeleccionadoId })
         });
@@ -952,7 +977,11 @@ function renderBuscar() {
     <label>Cliente</label>
     <input type="text" id="n-cliente">
     <label>Celular</label>
-    <input type="tel" id="n-celular">
+    <div style="display:flex;gap:8px;">
+      <input type="tel" id="n-celular" style="flex:1;">
+      <button type="button" class="btn" id="btn-sincronizar-wox" style="width:auto;padding:10px 14px;background:#0b76ef;">🔄 Sincronizar</button>
+    </div>
+    <div id="n-sync-wox-resultado" style="font-size:12px;margin-top:4px;"></div>
     <label>Servicio a realizar</label>
     <select id="n-trabajo">
       <option value="Instalación">Instalación</option>
@@ -1053,6 +1082,35 @@ document.getElementById('n-fecha').value = new Date().toISOString().slice(0,10);
 let VEHICULOS_WOX_SELECCIONADOS = [];
 let VEHICULOS_MANUAL_SELECCIONADOS = [];
 let ULTIMA_BUSQUEDA_WOX = [];
+let SYNC_WOX_USER_ID = null;
+let SYNC_WOX_CORREO = null;
+let SYNC_WOX_ESTADO = null;
+async function sincronizarClienteWox() {
+  const celular = document.getElementById('n-celular').value.trim();
+  const cont = document.getElementById('n-sync-wox-resultado');
+  SYNC_WOX_USER_ID = null; SYNC_WOX_CORREO = null; SYNC_WOX_ESTADO = null;
+  if (!celular) { cont.innerHTML = '<span style="color:#c53030;">Escribe el celular primero.</span>'; return; }
+  cont.innerHTML = 'Sincronizando...';
+  try {
+    const r = await fetch('/api/servicio/buscar-cliente?celular=' + encodeURIComponent(celular) + '&clave=' + encodeURIComponent(CLAVE));
+    const data = await r.json();
+    if (data.matches && data.matches.length === 1) {
+      SYNC_WOX_USER_ID = data.matches[0].id;
+      SYNC_WOX_CORREO = data.matches[0].email;
+      SYNC_WOX_ESTADO = 'encontrado';
+      cont.innerHTML = '<span style="color:#128C7E;">✅ Cliente existente en WOX — ' + escHtmlServicio(SYNC_WOX_CORREO) + '</span>';
+    } else if (data.matches && data.matches.length > 1) {
+      SYNC_WOX_ESTADO = 'ambiguo';
+      cont.innerHTML = '<span style="color:#f5a623;">⚠️ Varias coincidencias por ese celular (' + data.matches.length + ') — se enlazará manualmente al aplicar a GPSWOX.</span>';
+    } else {
+      SYNC_WOX_ESTADO = 'nuevo';
+      cont.innerHTML = '<span style="color:#888;">🆕 Cliente nuevo — no encontrado en WOX.</span>';
+    }
+  } catch (e) {
+    cont.innerHTML = '<span style="color:#c53030;">Error sincronizando.</span>';
+  }
+}
+document.getElementById('btn-sincronizar-wox').addEventListener('click', sincronizarClienteWox);
 function escHtmlServicio(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
@@ -1198,6 +1256,8 @@ function limpiarCampos() {
 }
 function limpiarFormulario() {
   limpiarCampos();
+  SYNC_WOX_USER_ID = null; SYNC_WOX_CORREO = null; SYNC_WOX_ESTADO = null;
+  const syncCont = document.getElementById('n-sync-wox-resultado'); if (syncCont) syncCont.innerHTML = '';
   const div = document.getElementById('resultado-nuevo');
   div.style.display = 'none';
   div.innerText = '';
@@ -1222,6 +1282,9 @@ document.getElementById('btn-crear').addEventListener('click', async () => {
     tecnico_id: document.getElementById('n-tecnico_id').value,
     cliente: document.getElementById('n-cliente').value,
     celular: document.getElementById('n-celular').value,
+    wox_user_id: SYNC_WOX_USER_ID,
+    wox_correo: SYNC_WOX_CORREO,
+    wox_sync_estado: SYNC_WOX_ESTADO,
     trabajo: trabajoVal,
     fecha: document.getElementById('n-fecha').value,
     hora: document.getElementById('n-hora').value,
@@ -1644,17 +1707,19 @@ module.exports = function servicioHandler(req, res, sock) {
           conn.query(
             `INSERT INTO servicios_gps (tecnico_id, tecnico_nombre, fecha, hora, cliente, celular, trabajo,
              vehiculo_marca, vehiculo_modelo, color_vehiculo, placa_chasis, zona_instalacion, ubicacion_url, nota, imei, correo, token, estado,
-             vehiculo_destino_marca, vehiculo_destino_modelo, vehiculo_destino_color, vehiculo_destino_placa, vehiculo_destino_anio)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asignado', ?, ?, ?, ?, ?)`,
+             vehiculo_destino_marca, vehiculo_destino_modelo, vehiculo_destino_color, vehiculo_destino_placa, vehiculo_destino_anio,
+             wox_user_id, wox_sync_estado)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'asignado', ?, ?, ?, ?, ?, ?, ?)`,
             [data.tecnico_id, t.nombre, data.fecha||new Date().toISOString().slice(0,10), data.hora||null,
              data.cliente||null, data.celular||null, data.trabajo||null,
              campos.vehiculo_marca||null, campos.vehiculo_modelo||null, campos.color_vehiculo||null, campos.placa_chasis||null,
-             campos.zona_instalacion||null, data.ubicacion_url||null, data.nota||null, campos.imei||null, campos.correo||null, token,
+             campos.zona_instalacion||null, data.ubicacion_url||null, data.nota||null, campos.imei||null, campos.correo||data.wox_correo||null, token,
              esTrasladoCrear ? (data.vehiculo_destino_marca||null) : null,
              esTrasladoCrear ? (data.vehiculo_destino_modelo||null) : null,
              esTrasladoCrear ? (data.vehiculo_destino_color||null) : null,
              esTrasladoCrear ? (data.vehiculo_destino_placa||null) : null,
-             esTrasladoCrear ? (data.vehiculo_destino_anio||null) : null],
+             esTrasladoCrear ? (data.vehiculo_destino_anio||null) : null,
+             data.wox_user_id||null, data.wox_sync_estado||null],
             (err, result) => {
               conn.end();
               if (err) { resolve({ ok:false, error: err.message }); return; }
@@ -2177,6 +2242,7 @@ module.exports = function servicioHandler(req, res, sock) {
   }
 
   if (req.method === 'GET' && parsed.pathname === '/api/servicio/buscar-cliente') {
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({matches:[]})); }
     const conn = db();
     if (parsed.query.email) {
       const q = '%' + parsed.query.email + '%';
@@ -2206,6 +2272,7 @@ module.exports = function servicioHandler(req, res, sock) {
     return;
   }
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/aplicar-wox') {
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
@@ -2261,33 +2328,47 @@ module.exports = function servicioHandler(req, res, sock) {
                 res.writeHead(200, {'Content-Type':'application/json'});
                 return res.end(JSON.stringify({ ok:false, error:'Error actualizando device: ' + err3.message }));
               }
-              conn.query(
-                'SELECT 1 FROM user_device_pivot WHERE user_id=? AND device_id=?',
-                [data.cliente_user_id, deviceId],
-                (err4, pivotRows) => {
-                  const yaVinculado = !err4 && pivotRows && pivotRows.length;
-                  const marcarAplicado = () => {
-                    conn.query(
-                      'UPDATE servicios_gps SET aplicado_wox=1, aplicado_wox_at=NOW() WHERE id=?',
-                      [data.id],
-                      () => {
-                        conn.end();
-                        res.writeHead(200, {'Content-Type':'application/json'});
-                        res.end(JSON.stringify({ ok: true, device_id: deviceId, expiration_date: fechaVenc, ya_vinculado: !!yaVinculado }));
-                      }
-                    );
-                  };
-                  if (yaVinculado) {
-                    marcarAplicado();
-                  } else {
-                    conn.query(
-                      'INSERT INTO user_device_pivot (user_id, device_id, group_id, active) VALUES (?, ?, 0, 1)',
-                      [data.cliente_user_id, deviceId],
-                      () => { marcarAplicado(); }
-                    );
-                  }
+              resolverGrupoCliente(data.cliente_user_id, s.cliente, (errGrupo, groupId) => {
+                if (errGrupo) {
+                  conn.end();
+                  res.writeHead(200, {'Content-Type':'application/json'});
+                  return res.end(JSON.stringify({ ok:false, error:'Error resolviendo grupo del cliente: ' + errGrupo.message }));
                 }
-              );
+                conn.query(
+                  'SELECT user_id, group_id FROM user_device_pivot WHERE device_id=? LIMIT 1',
+                  [deviceId],
+                  (err4, pivotRows) => {
+                    const yaEnDestino = !err4 && pivotRows && pivotRows.length && pivotRows[0].user_id === data.cliente_user_id && pivotRows[0].group_id === groupId;
+                    const marcarAplicado = () => {
+                      conn.query(
+                        'UPDATE servicios_gps SET aplicado_wox=1, aplicado_wox_at=NOW() WHERE id=?',
+                        [data.id],
+                        () => {
+                          conn.end();
+                          res.writeHead(200, {'Content-Type':'application/json'});
+                          res.end(JSON.stringify({ ok: true, device_id: deviceId, expiration_date: fechaVenc, group_id: groupId, ya_vinculado: !!yaEnDestino }));
+                        }
+                      );
+                    };
+                    if (yaEnDestino) {
+                      marcarAplicado();
+                    } else if (!err4 && pivotRows && pivotRows.length) {
+                      // El IMEI ya tiene una fila (normalmente en el grupo del tecnico) -> se mueve al usuario/grupo del cliente.
+                      conn.query(
+                        'UPDATE user_device_pivot SET user_id=?, group_id=?, active=1 WHERE device_id=?',
+                        [data.cliente_user_id, groupId, deviceId],
+                        () => { marcarAplicado(); }
+                      );
+                    } else {
+                      conn.query(
+                        'INSERT INTO user_device_pivot (user_id, device_id, group_id, active) VALUES (?, ?, ?, 1)',
+                        [data.cliente_user_id, deviceId, groupId],
+                        () => { marcarAplicado(); }
+                      );
+                    }
+                  }
+                );
+              });
             }
           );
         });
@@ -2296,6 +2377,7 @@ module.exports = function servicioHandler(req, res, sock) {
     return;
   }
   if (req.method === 'POST' && parsed.pathname === '/api/servicio/aplicar-wox-traslado') {
+    if (!accesoAdminValido(req, parsed.query)) { res.writeHead(403, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ok:false, error:'No autorizado'})); }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
