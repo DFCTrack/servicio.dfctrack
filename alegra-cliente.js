@@ -170,4 +170,85 @@ async function consultarEstadoFactura(invoiceId) {
     return { ok: false, error: error.message };
   }
 }
-module.exports = { buscarOCrearContacto, crearFactura, consultarEstadoFactura, buscarContactoPorCorreo };
+
+function sumarDias(fechaISO, dias) {
+  const d = new Date(fechaISO + 'T00:00:00');
+  d.setDate(d.getDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Crea una factura con cantidad variable (a diferencia de crearFactura,
+ * que siempre usa cantidad 1). Se usa para la facturación mensual por
+ * cantidad de vehículos (gerentes WOX). El precio se toma siempre del
+ * item en Alegra (no se hardcodea), así que si cambia el precio en
+ * Alegra, esta factura lo refleja automáticamente.
+ */
+async function crearFacturaCantidad({ contactoId, itemId, cantidad, descripcion, numberTemplateId }) {
+  try {
+    const precio = await obtenerPrecioItem(itemId);
+    const hoy = new Date().toISOString().slice(0, 10);
+    const vencimiento = sumarDias(hoy, 7);
+    const body = {
+      date: hoy,
+      dueDate: vencimiento,
+      client: { id: contactoId },
+      items: [
+        { id: itemId, price: precio, quantity: cantidad, description: descripcion || undefined, tax: [] }
+      ],
+      paymentForm: 'CREDIT',
+      numberTemplate: { id: numberTemplateId || '18' },
+      status: 'open'
+    };
+    const res = await fetch(`${ALEGRA_BASE_URL}/invoices`, {
+      method: 'POST',
+      headers: {
+        Authorization: getAuthHeader(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const detalle = await res.text();
+      return { ok: false, error: `Alegra respondio ${res.status} al crear factura: ${detalle}` };
+    }
+    const factura = await res.json();
+    return { ok: true, factura };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+/**
+ * Envía una factura ya creada por correo desde Alegra mismo (usa su
+ * propio motor de envío, con el PDF adjunto). emails es un arreglo de
+ * direcciones destino (incluir ahí tanto al cliente como la copia).
+ */
+async function enviarFacturaPorEmail(invoiceId, emails) {
+  try {
+    const res = await fetch(`${ALEGRA_BASE_URL}/invoices/${invoiceId}/email`, {
+      method: 'POST',
+      headers: {
+        Authorization: getAuthHeader(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ emails })
+    });
+    if (!res.ok) {
+      const detalle = await res.text();
+      return { ok: false, error: `Alegra respondio ${res.status} al enviar el correo: ${detalle}` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+module.exports = {
+  buscarOCrearContacto,
+  crearFactura,
+  crearFacturaCantidad,
+  enviarFacturaPorEmail,
+  consultarEstadoFactura,
+  buscarContactoPorCorreo
+};
