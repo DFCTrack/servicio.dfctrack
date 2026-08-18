@@ -28,6 +28,118 @@ const DB_CONFIG_CHAT = {
 };
 function dbChat() { return mysql.createConnection(DB_CONFIG_CHAT); }
 let sock = null;
+
+/*
+ * DFC Track - Global WhatsApp Rate Limiter
+ *
+ * Una sola cola FIFO para TODAS las llamadas sock.sendMessage()
+ * realizadas dentro de este proceso.
+ *
+ * Regla:
+ * - máximo un inicio de envío cada 60 segundos;
+ * - SETGPS, CRM, renovaciones, registro y chat comparten la cola;
+ * - la cola vive fuera del socket y sobrevive a reconexiones;
+ * - cada nuevo socket recibe el mismo wrapper.
+ */
+
+const GLOBAL_WHATSAPP_INTERVAL_MS = 60000;
+
+let globalWhatsAppQueueTail = Promise.resolve();
+let globalWhatsAppLastSendStartedAt = 0;
+let globalWhatsAppQueueDepth = 0;
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function installGlobalWhatsAppRateLimit(waSocket) {
+    if (!waSocket || typeof waSocket.sendMessage !== 'function') {
+        throw new Error('No se puede instalar rate limit: sendMessage no disponible');
+    }
+
+    if (waSocket.__dfcGlobalRateLimitInstalled) {
+        return waSocket;
+    }
+
+    const originalSendMessage = waSocket.sendMessage.bind(waSocket);
+
+    waSocket.sendMessage = function (...args) {
+        globalWhatsAppQueueDepth++;
+
+        const execute = async () => {
+            try {
+                const now = Date.now();
+
+                const waitMs = Math.max(
+                    0,
+                    GLOBAL_WHATSAPP_INTERVAL_MS -
+                    (now - globalWhatsAppLastSendStartedAt)
+                );
+
+                if (waitMs > 0) {
+                    console.log(JSON.stringify({
+                        event: 'whatsapp_global_rate_wait',
+                        waitMs,
+                        queueDepth: globalWhatsAppQueueDepth
+                    }));
+
+                    await sleep(waitMs);
+                }
+
+                globalWhatsAppLastSendStartedAt = Date.now();
+
+                console.log(JSON.stringify({
+                    event: 'whatsapp_global_send_start',
+                    queueDepth: globalWhatsAppQueueDepth
+                }));
+
+                return await originalSendMessage(...args);
+
+            } finally {
+                globalWhatsAppQueueDepth--;
+            }
+        };
+
+        const result = globalWhatsAppQueueTail.then(
+            execute,
+            execute
+        );
+
+        globalWhatsAppQueueTail = result.then(
+            () => undefined,
+            () => undefined
+        );
+
+        return result;
+    };
+
+    Object.defineProperty(
+        waSocket,
+        '__dfcGlobalRateLimitInstalled',
+        {
+            value: true,
+            enumerable: false,
+            configurable: false,
+            writable: false
+        }
+    );
+
+    console.log(JSON.stringify({
+        event: 'whatsapp_global_rate_limit_installed',
+        intervalMs: GLOBAL_WHATSAPP_INTERVAL_MS
+    }));
+
+    return waSocket;
+}
+
+// Estado operativo real de WhatsApp.
+// IMPORTANTE: que sock exista NO significa que WhatsApp este conectado.
+let whatsappConnection = 'starting';
+let lastConnectedAt = null;
+let lastDisconnectedAt = null;
+let lastDisconnectCode = null;
+let lastDisconnectError = null;
+
 async function conectar() {
     const { state, saveCreds } = await useMultiFileAuthState('/opt/baileys-servicio/session');
     sock = makeWASocket({
@@ -35,6 +147,8 @@ async function conectar() {
         printQRInTerminal: true,
         logger: pino({ level: 'silent' }),
     });
+
+    installGlobalWhatsAppRateLimit(sock);
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
@@ -46,13 +160,43 @@ async function conectar() {
             console.log('📲 QR guardado en http://85.239.231.210:3000/qr');
         }
         if (connection === 'open') {
-            console.log('✅ WhatsApp conectado - DFC Track GPS 809-372-5888');
+            whatsappConnection = 'open';
+            lastConnectedAt = new Date().toISOString();
+            lastDisconnectCode = null;
+            lastDisconnectError = null;
+
+            const connectedId = sock?.user?.id || state?.creds?.me?.id || 'desconocido';
+            console.log(`✅ WhatsApp conectado - DFC Track GPS - ${connectedId}`);
         }
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            whatsappConnection = 'close';
+            lastDisconnectedAt = new Date().toISOString();
+
+            const statusCode =
+                lastDisconnect?.error?.output?.statusCode ??
+                lastDisconnect?.error?.statusCode ??
+                null;
+
+            const errorMessage =
+                lastDisconnect?.error?.message ??
+                lastDisconnect?.error?.output?.payload?.message ??
+                'Connection closed';
+
+            lastDisconnectCode = statusCode;
+            lastDisconnectError = errorMessage;
+
+            console.error('❌ WhatsApp connection CLOSE', {
+                statusCode,
+                error: errorMessage
+            });
+
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
             if (shouldReconnect) {
                 console.log('Reconectando...');
                 conectar();
+            } else {
+                console.error('⛔ WhatsApp logged out - requiere nueva vinculacion');
             }
         }
     });
@@ -101,6 +245,27 @@ conectar();
 // Servidor HTTP
 const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/send') {
+
+        const expectedApiKey = process.env.DFC_CRM_API_KEY;
+        const receivedApiKey = req.headers['x-api-key'];
+
+        if (
+            !expectedApiKey ||
+            !receivedApiKey ||
+            receivedApiKey !== expectedApiKey
+        ) {
+            res.writeHead(401, {
+                'Content-Type': 'application/json'
+            });
+
+            res.end(JSON.stringify({
+                enviado: false,
+                error: 'Unauthorized'
+            }));
+
+            return;
+        }
+
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
@@ -161,8 +326,31 @@ const server = http.createServer(async (req, res) => {
             }
         });
     } else if (req.url === '/health') {
-        res.writeHead(200, {'Content-Type': 'application/json'});
-        res.end(JSON.stringify({ status: sock ? 'online' : 'offline' }));
+        const readyToSend = whatsappConnection === 'open';
+
+        const connectedId =
+            sock?.user?.id ||
+            null;
+
+        res.writeHead(readyToSend ? 200 : 503, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store'
+        });
+
+        res.end(JSON.stringify({
+            service: 'dfctrack-servicio',
+            api: 'online',
+            whatsapp: readyToSend ? 'connected' : 'disconnected',
+            connection: whatsappConnection,
+            readyToSend,
+            account: connectedId,
+            port: 3001,
+            lastConnectedAt,
+            lastDisconnectedAt,
+            lastDisconnectCode,
+            lastDisconnectError,
+            uptimeSeconds: Math.floor(process.uptime())
+        }));
     } else if (req.url === '/groups?token=' + (process.env.QR_ACCESS_TOKEN || '__sin_configurar__')) {
         try {
             const groups = await sock.groupFetchAllParticipating();
@@ -178,4 +366,4 @@ const server = http.createServer(async (req, res) => {
         res.end('<html><body><h2>DFC Track GPS - WhatsApp</h2><img src="/qr" style="width:350px"><br><button onclick="location.reload()">Actualizar QR</button></body></html>');
     }
 });
-server.listen(3001, () => console.log('🚀 Servidor en puerto 3000'));
+server.listen(3001, () => console.log('🚀 Servidor DFC Track en puerto 3001'));

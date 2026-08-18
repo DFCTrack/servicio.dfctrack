@@ -244,11 +244,37 @@ async function enviarFacturaPorEmail(invoiceId, emails) {
   }
 }
 
+/**
+ * Anula una factura de venta (para deshacer facturas de prueba u errores).
+ * Deja la factura con balance 0 y estado "void" -- no la borra del
+ * consecutivo, solo la anula.
+ */
+async function anularFactura(invoiceId) {
+  try {
+    const res = await fetch(`${ALEGRA_BASE_URL}/invoices/${invoiceId}/void`, {
+      method: 'POST',
+      headers: {
+        Authorization: getAuthHeader(),
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const detalle = await res.text();
+      return { ok: false, error: `Alegra respondio ${res.status} al anular: ${detalle}` };
+    }
+    const factura = await res.json();
+    return { ok: true, factura };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 module.exports = {
   buscarOCrearContacto,
   crearFactura,
   crearFacturaCantidad,
   enviarFacturaPorEmail,
+  anularFactura,
   consultarEstadoFactura,
   buscarContactoPorCorreo
 };

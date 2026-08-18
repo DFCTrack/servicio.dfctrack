@@ -22,6 +22,22 @@
  * Crontab sugerido (corre todos los días a las 8:05am, el script decide
  * internamente si hoy toca facturar o no):
  *   5 8 * * * cd /opt/baileys-servicio && /usr/bin/node facturacion_gerentes.js >> facturacion_gerentes.log 2>&1
+ *
+ * Prueba manual (ignora el chequeo de fecha, crea factura real):
+ *   FORZAR_FACTURACION=1 node facturacion_gerentes.js
+ *
+ * Prueba manual mandando el correo solo a una dirección de prueba en vez
+ * de al cliente real (la factura en Alegra sí se crea real, solo cambia
+ * a quién se le manda el correo):
+ *   FORZAR_FACTURACION=1 CORREO_PRUEBA=diocuma@gmail.com node facturacion_gerentes.js
+ *
+ * Además del correo, se manda un WhatsApp de texto avisando que la
+ * factura ya está en su correo (sin PDF ni link, solo el aviso), usando
+ * el mismo bot de WhatsApp que ya corre en este servidor (POST /send en
+ * localhost:3001). En modo prueba (FORZAR_FACTURACION=1) el WhatsApp NO
+ * se manda al número real del cliente salvo que definas WHATSAPP_PRUEBA
+ * con un número de prueba:
+ *   FORZAR_FACTURACION=1 CORREO_PRUEBA=diocuma@gmail.com WHATSAPP_PRUEBA=18092064925 node facturacion_gerentes.js
  */
 
 const fs = require('fs');
@@ -87,10 +103,10 @@ function esDiaDeFacturacion(hoy) {
   return dia === 30 || (ultimoDiaMes < 30 && dia === ultimoDiaMes);
 }
 
-async function contarVehiculos(email) {
+async function buscarUsuarioWoxYContar(email) {
   const conn = await mysql.createConnection(DB_CONFIG);
   try {
-    const [userRows] = await conn.execute('SELECT id FROM users WHERE email = ?', [email]);
+    const [userRows] = await conn.execute('SELECT id, phone_number FROM users WHERE email = ?', [email]);
     if (!userRows.length) {
       throw new Error(`No existe usuario en GPSWOX con correo ${email}`);
     }
@@ -99,17 +115,44 @@ async function contarVehiculos(email) {
       'SELECT COUNT(*) AS total FROM user_device_pivot WHERE user_id = ?',
       [userId]
     );
-    return countRows[0].total;
+    return { cantidad: countRows[0].total, telefono: userRows[0].phone_number || null };
   } finally {
     await conn.end();
   }
 }
 
+function normalizarNumeroWhatsapp(numero) {
+  const digitos = String(numero || '').replace(/[^0-9]/g, '');
+  if (!digitos) return null;
+  // Números dominicanos guardados sin código de país (10 dígitos) -> agregar el 1
+  if (digitos.length === 10) return '1' + digitos;
+  return digitos;
+}
+
+async function avisarPorWhatsapp(numero, mensaje) {
+  try {
+    const res = await fetch('http://127.0.0.1:3001/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ numero, mensaje })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.enviado === false) {
+      return { ok: false, error: (data && data.error) || `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 async function facturarGerente(gerente, mesTexto) {
   log(`--- ${gerente.nombre} ---`);
-  let cantidad;
+  let cantidad, telefono;
   try {
-    cantidad = await contarVehiculos(gerente.emailWox);
+    const info = await buscarUsuarioWoxYContar(gerente.emailWox);
+    cantidad = info.cantidad;
+    telefono = info.telefono;
   } catch (e) {
     log(`${gerente.nombre}: ERROR consultando vehículos en GPSWOX: ${e.message}`);
     return;
@@ -137,21 +180,57 @@ async function facturarGerente(gerente, mesTexto) {
   const numero = (factura.numberTemplate && factura.numberTemplate.fullNumber) || factura.id;
   log(`${gerente.nombre}: factura ${numero} creada (RD$${factura.total}). Enviando por correo...`);
 
-  const envio = await enviarFacturaPorEmail(factura.id, [gerente.emailWox, COPIA_CORREO]);
+  const correoPrueba = process.env.CORREO_PRUEBA;
+  const destinatarios = correoPrueba ? [correoPrueba] : [gerente.emailWox, COPIA_CORREO];
+  if (correoPrueba) {
+    log(`${gerente.nombre}: CORREO_PRUEBA activo -- se envía solo a ${correoPrueba} (no a ${gerente.emailWox} ni a ${COPIA_CORREO}).`);
+  }
+
+  const envio = await enviarFacturaPorEmail(factura.id, destinatarios);
   if (!envio.ok) {
     log(`${gerente.nombre}: factura creada pero ERROR al enviar el correo: ${envio.error}`);
     return;
   }
 
-  log(`${gerente.nombre}: correo enviado a ${gerente.emailWox} con copia a ${COPIA_CORREO}. Listo.`);
+  log(`${gerente.nombre}: correo enviado a ${destinatarios.join(', ')}. Listo.`);
+
+  // Aviso por WhatsApp (solo texto, sin PDF ni link) de que la factura ya está en su correo.
+  const whatsappPrueba = process.env.WHATSAPP_PRUEBA;
+  let numeroDestino = null;
+  if (correoPrueba) {
+    // En modo prueba no se manda al número real del cliente salvo que se indique WHATSAPP_PRUEBA.
+    numeroDestino = whatsappPrueba ? normalizarNumeroWhatsapp(whatsappPrueba) : null;
+    if (!numeroDestino) {
+      log(`${gerente.nombre}: modo prueba sin WHATSAPP_PRUEBA -- se omite el aviso por WhatsApp.`);
+    }
+  } else {
+    numeroDestino = normalizarNumeroWhatsapp(telefono);
+    if (!numeroDestino) {
+      log(`${gerente.nombre}: no tiene teléfono registrado en GPSWOX -- se omite el aviso por WhatsApp.`);
+    }
+  }
+
+  if (numeroDestino) {
+    const mensajeWs = `Hola ${gerente.nombre}, tu factura de la plataforma DFC Track GPS de ${mesTexto} ya está en tu correo (${gerente.emailWox}). Cualquier duda, escríbenos aquí mismo. Gracias por confiar en DFC Track GPS.`;
+    const avisoWs = await avisarPorWhatsapp(numeroDestino, mensajeWs);
+    if (!avisoWs.ok) {
+      log(`${gerente.nombre}: ERROR al enviar el aviso por WhatsApp a ${numeroDestino}: ${avisoWs.error}`);
+    } else {
+      log(`${gerente.nombre}: aviso por WhatsApp enviado a ${numeroDestino}.`);
+    }
+  }
 }
 
 async function main() {
   const hoy = new Date();
+  const forzado = process.env.FORZAR_FACTURACION === '1';
 
-  if (!esDiaDeFacturacion(hoy)) {
+  if (!esDiaDeFacturacion(hoy) && !forzado) {
     log(`Hoy (${hoy.toISOString().slice(0, 10)}) no es día de facturación. Nada que hacer.`);
     return;
+  }
+  if (forzado) {
+    log('FORZAR_FACTURACION=1 -- ignorando el chequeo de fecha (modo prueba).');
   }
 
   if (!process.env.DB_PASS_WSC_REGISTRO) {
